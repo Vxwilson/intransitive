@@ -132,6 +132,7 @@ The studio features 4 dedicated operational tabs:
 - **Full-Width Layout**:
   - **Top Card (`TurboTrainerCard`)**:
     - Lifetime training metrics: Generation count, total games played, Blue/Red win ratio, average game length.
+    - **Self-Play Training Depth**: Segmented selector between **Depth 1 (Ultra-Turbo ~25,000 plies/s)** for rapid feature discovery and **Depth 2 (Tactical Lookahead ~1,500 plies/s)** for blunder-free master training.
     - Custom games input (warm ivory styled, dark-mode protected) with quick batch presets (100, 300, 500, 2500) and Train button.
     - Rich game outcome telemetry: Touchdowns (Blue vs Red), Eliminations (Blue army vs Red army wiped), Draws (repetition vs 80-ply limit), and ply extremes (shortest vs longest decisive games).
     - Checkpoint snapshot manager: Save snapshot with timestamped naming (`Gen X_MMDD_HHMMSS`), restore baseline, and view saved checkpoints.

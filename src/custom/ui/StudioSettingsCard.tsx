@@ -18,6 +18,7 @@ import {
   Sparkles,
   Zap,
   Trash2,
+  Cpu,
 } from 'lucide-react';
 import type { Checkpoint } from '../engine/types';
 
@@ -38,6 +39,8 @@ interface StudioSettingsCardProps {
   onToggleTournamentZoom: () => void;
   searchDepth: number;
   onChangeSearchDepth: (depth: number) => void;
+  trainingSearchDepth?: number;
+  onChangeTrainingSearchDepth?: (depth: number) => void;
   learningRateAnnealing: boolean;
   onToggleAnnealing: () => void;
   delayMs: number;
@@ -68,6 +71,8 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
   onToggleTournamentZoom,
   searchDepth,
   onChangeSearchDepth,
+  trainingSearchDepth = 1,
+  onChangeTrainingSearchDepth,
   learningRateAnnealing,
   onToggleAnnealing,
   delayMs,
@@ -202,6 +207,36 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                 ))}
               </div>
             </div>
+
+            {/* Self-Play Training Depth Selector */}
+            {onChangeTrainingSearchDepth && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#2b2520', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <Cpu size={14} color="#ea580c" /> Self-Play Training Depth
+                  </span>
+                  <p style={{ fontSize: '0.7rem', color: '#786f66', margin: '0.15rem 0 0 0' }}>
+                    Minimax lookahead used during autonomous self-play model training
+                  </p>
+                </div>
+                <div className="intransitive-mini-btn-group">
+                  {[
+                    { d: 1, label: 'Depth 1 (Turbo)' },
+                    { d: 2, label: 'Depth 2 (Tactical)' },
+                  ].map(({ d, label }) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => onChangeTrainingSearchDepth(d)}
+                      className={`intransitive-mini-btn ${trainingSearchDepth === d ? 'active' : ''}`}
+                      style={{ padding: '0.25rem 0.55rem', fontSize: '0.7rem' }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Fast Board Zoom Toggle */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

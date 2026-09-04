@@ -59,6 +59,7 @@ interface SavedSettings {
   analysisMaxRows?: number;
   tournamentZoomEnabled?: boolean;
   arenaSearchDepth?: number;
+  trainingSearchDepth?: number;
   learningRateAnnealing?: boolean;
   soundEnabled?: boolean;
   delayMs?: number;
@@ -137,6 +138,9 @@ export const IntransitiveStudio: React.FC = () => {
   );
   const [arenaSearchDepth, setArenaSearchDepth] = useState<number>(
     initialSettings.arenaSearchDepth ?? 2
+  );
+  const [trainingSearchDepth, setTrainingSearchDepth] = useState<number>(
+    initialSettings.trainingSearchDepth ?? 1
   );
   const [learningRateAnnealing, setLearningRateAnnealing] = useState<boolean>(
     initialSettings.learningRateAnnealing ?? true
@@ -273,6 +277,7 @@ export const IntransitiveStudio: React.FC = () => {
       analysisMaxRows,
       tournamentZoomEnabled,
       arenaSearchDepth,
+      trainingSearchDepth,
       learningRateAnnealing,
       soundEnabled,
       delayMs,
@@ -287,6 +292,7 @@ export const IntransitiveStudio: React.FC = () => {
     analysisMaxRows,
     tournamentZoomEnabled,
     arenaSearchDepth,
+    trainingSearchDepth,
     learningRateAnnealing,
     soundEnabled,
     delayMs,
@@ -620,11 +626,12 @@ export const IntransitiveStudio: React.FC = () => {
         type: 'START_TURBO',
         totalGames,
         config: {
+          searchDepth: trainingSearchDepth,
           learningRateAnnealing,
         },
       });
     }
-  }, [learningRateAnnealing]);
+  }, [trainingSearchDepth, learningRateAnnealing]);
 
   const handleStopTurbo = useCallback(() => {
     if (workerRef.current) {
@@ -1054,6 +1061,8 @@ export const IntransitiveStudio: React.FC = () => {
           onToggleTournamentZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
           searchDepth={arenaSearchDepth}
           onChangeSearchDepth={setArenaSearchDepth}
+          trainingSearchDepth={trainingSearchDepth}
+          onChangeTrainingSearchDepth={setTrainingSearchDepth}
           learningRateAnnealing={learningRateAnnealing}
           onToggleAnnealing={() => setLearningRateAnnealing(!learningRateAnnealing)}
           delayMs={delayMs}
@@ -1073,6 +1082,7 @@ export const IntransitiveStudio: React.FC = () => {
             setAnalysisMaxRows(3);
             setTournamentZoomEnabled(true);
             setArenaSearchDepth(2);
+            setTrainingSearchDepth(1);
             setLearningRateAnnealing(true);
             setSoundEnabled(true);
             setDelayMs(300);
@@ -1089,6 +1099,8 @@ export const IntransitiveStudio: React.FC = () => {
             onStartTurbo={handleStartTurbo}
             onStopTurbo={handleStopTurbo}
             onResetTraining={handleResetTraining}
+            trainingSearchDepth={trainingSearchDepth}
+            onChangeTrainingSearchDepth={setTrainingSearchDepth}
           />
 
           <InterpretabilityCard

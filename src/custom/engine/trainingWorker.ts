@@ -40,7 +40,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
       let completed = 0;
       const startTime = performance.now();
-      const chunkSize = Math.min(25, totalGames);
+      const chunkSize = Math.min(trainer.learner.config.searchDepth > 1 ? 5 : 25, totalGames);
 
       function runChunk() {
         if (turboCancelled) {

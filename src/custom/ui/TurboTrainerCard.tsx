@@ -14,6 +14,7 @@ import {
   ShieldAlert,
   Sliders,
   Sparkles,
+  BrainCircuit,
 } from 'lucide-react';
 import type { TrainingStats } from '../engine/types';
 
@@ -24,6 +25,8 @@ interface TurboTrainerCardProps {
   onStartTurbo: (games: number) => void;
   onStopTurbo: () => void;
   onResetTraining: () => void;
+  trainingSearchDepth?: number;
+  onChangeTrainingSearchDepth?: (depth: number) => void;
 }
 
 export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
@@ -33,6 +36,8 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
   onStartTurbo,
   onStopTurbo,
   onResetTraining,
+  trainingSearchDepth = 1,
+  onChangeTrainingSearchDepth,
 }) => {
   const [customAmount, setCustomAmount] = useState<number>(300);
 
@@ -132,6 +137,52 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
           <span className="intransitive-metric-val">{stats.avgGameLength} plies</span>
         </div>
       </div>
+
+      {/* Self-Play Training Depth Selector Row */}
+      {!isTraining && onChangeTrainingSearchDepth && (
+        <div
+          style={{
+            marginTop: '0.65rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0.42rem 0.75rem',
+            background: '#faf8f5',
+            borderRadius: '8px',
+            border: '1px solid #eee8de',
+            fontSize: '0.74rem',
+          }}
+        >
+          <div>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 700, color: '#4a4239' }}>
+              <BrainCircuit size={14} color="#7c3aed" /> Self-Play Training Depth:
+            </span>
+            <span style={{ fontSize: '0.69rem', color: '#786f66', marginLeft: '0.45rem' }}>
+              {trainingSearchDepth === 1
+                ? 'Ultra-Turbo (~25k plies/s - rapid exploration)'
+                : 'Tactical Lookahead (~1.5k plies/s - blunder-free master play)'}
+            </span>
+          </div>
+
+          <div className="intransitive-mini-btn-group">
+            {[
+              { d: 1, label: 'Depth 1 (Turbo)' },
+              { d: 2, label: 'Depth 2 (Tactical)' },
+            ].map(({ d, label }) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => onChangeTrainingSearchDepth(d)}
+                className={`intransitive-mini-btn ${trainingSearchDepth === d ? 'active' : ''}`}
+                style={{ padding: '0.2rem 0.6rem', fontSize: '0.71rem' }}
+                title={`Train self-play games at Minimax Depth ${d}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Arbitrary Training Amount Input Bar (Placed under metrics grid) */}
       {!isTraining && (
