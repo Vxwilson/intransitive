@@ -93,12 +93,25 @@ export interface StateFeatures {
   };
 }
 
+export interface AnalysisTelemetry {
+  depth: number;
+  maxDepth: number;
+  nodes: number;
+  nps: number;
+  timeMs: number;
+  candidateMoves: RankedMove[];
+  isSearching: boolean;
+  currentFen?: string;
+}
+
 // Worker message protocol
 export type WorkerRequest =
   | { type: 'START_TURBO'; totalGames: number; config?: Partial<TrainingConfig> }
   | { type: 'STOP_TURBO' }
   | { type: 'STEP_LIVE'; currentFen?: string; searchDepth?: number; config?: Partial<TrainingConfig>; customWeights?: EvaluationWeights }
   | { type: 'ARENA_RUN'; checkpointA: Checkpoint; checkpointB: Checkpoint; numGames: number; searchDepth?: number; streamMoves?: boolean }
+  | { type: 'START_ANALYSIS'; currentFen: string; weights?: EvaluationWeights; maxDepth?: number; count?: number }
+  | { type: 'STOP_ANALYSIS' }
   | { type: 'SET_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
   | { type: 'SYNC_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
   | { type: 'RESET_TRAINING' };
@@ -116,6 +129,26 @@ export type WorkerResponse =
       type: 'TURBO_COMPLETE';
       stats: TrainingStats;
       weights: EvaluationWeights;
+    }
+  | {
+      type: 'ANALYSIS_PROGRESS';
+      depth: number;
+      maxDepth: number;
+      nodes: number;
+      nps: number;
+      timeMs: number;
+      candidateMoves: RankedMove[];
+      currentFen?: string;
+    }
+  | {
+      type: 'ANALYSIS_COMPLETE';
+      depth: number;
+      maxDepth: number;
+      nodes: number;
+      nps: number;
+      timeMs: number;
+      candidateMoves: RankedMove[];
+      currentFen?: string;
     }
   | {
       type: 'LIVE_STEP';

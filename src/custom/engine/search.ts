@@ -45,8 +45,10 @@ export function minimax(
   alpha: number,
   beta: number,
   weights: EvaluationWeights,
-  ply: number = 0
+  ply: number = 0,
+  context?: { nodes: number }
 ): number {
+  if (context) context.nodes++;
   const status = game.isTerminal();
   if (status.isOver) {
     if (status.winner === PLAYER_BLUE) return WIN_SCORE - ply;
@@ -84,7 +86,7 @@ export function minimax(
     let maxEval = -Infinity;
     for (let i = 0; i < moves.length; i++) {
       game.makeMove(moves[i]);
-      const score = minimax(game, depth - 1, alpha, beta, weights, ply + 1);
+      const score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
       game.unmakeMove();
 
       if (score > maxEval) {
@@ -102,7 +104,7 @@ export function minimax(
     let minEval = Infinity;
     for (let i = 0; i < moves.length; i++) {
       game.makeMove(moves[i]);
-      const score = minimax(game, depth - 1, alpha, beta, weights, ply + 1);
+      const score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
       game.unmakeMove();
 
       if (score < minEval) {
@@ -352,7 +354,8 @@ export function getTopMoves(
   game: IntransitiveGame,
   weights: EvaluationWeights,
   count: number = 5,
-  depth: number = 1
+  depth: number = 1,
+  context?: { nodes: number }
 ): RankedMove[] {
   const moves = game.generateLegalMoves();
   if (moves.length === 0) return [];
@@ -375,9 +378,10 @@ export function getTopMoves(
 
     let score: number;
     if (depth <= 1) {
+      if (context) context.nodes++;
       score = evaluate(game, weights);
     } else {
-      score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1);
+      score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1, context);
     }
 
     // Extract up to 5 subsequent moves for the continuation line
@@ -385,7 +389,7 @@ export function getTopMoves(
 
     game.unmakeMove();
 
-    // Mate detection
+    // Mate / Touchdown detection
     const MATE_THRESHOLD = WIN_SCORE - 100;
     const isMate = Math.abs(score) >= MATE_THRESHOLD;
     let mateInPlies: number | undefined;
@@ -398,12 +402,13 @@ export function getTopMoves(
       if (mateInPlies <= 0) mateInPlies = 1;
     }
 
-    // Generate brief tactical descriptor
+    // Generate accurate tactical & touchdown descriptor
     let threat: string | undefined;
     if (san.includes('#')) {
       threat = 'Touchdown Goal';
     } else if (isMate) {
-      threat = `Forced Win (${formatEvalScore(score, isMate, mateInPlies)})`;
+      const movesToMate = Math.max(1, Math.ceil((mateInPlies ?? 1) / 2));
+      threat = `🏆 Forced Win (M${movesToMate})`;
     } else if (move.captured) {
       threat = `Capture ${move.captured}`;
     }
@@ -434,4 +439,77 @@ export function getTopMoves(
   }
 
   return result;
+}
+
+export interface AnalysisStepResult {
+  depth: number;
+  maxDepth: number;
+  nodes: number;
+  nps: number;
+  timeMs: number;
+  candidateMoves: RankedMove[];
+  isComplete: boolean;
+}
+
+/**
+ * Runs an asynchronous or progressive iterative deepening search from Depth 1 to maxDepth.
+ * Streams intermediate results after each depth, and stops early on forced mate or cancellation.
+ */
+export function runIterativeDeepeningAnalysis(
+  game: IntransitiveGame,
+  weights: EvaluationWeights,
+  maxDepth: number = 6,
+  count: number = 5,
+  onProgress?: (result: AnalysisStepResult) => void,
+  shouldStop?: () => boolean
+): AnalysisStepResult {
+  const startTime = performance.now();
+  const context = { nodes: 0 };
+  let lastResult: RankedMove[] = [];
+  let achievedDepth = 1;
+
+  for (let d = 1; d <= maxDepth; d++) {
+    if (shouldStop && shouldStop()) break;
+
+    const moves = getTopMoves(game, weights, count, d, context);
+    lastResult = moves;
+    achievedDepth = d;
+
+    const elapsedMs = Math.max(1, performance.now() - startTime);
+    const nps = Math.round((context.nodes * 1000) / elapsedMs);
+    const isDone = d === maxDepth;
+
+    const stepResult: AnalysisStepResult = {
+      depth: d,
+      maxDepth,
+      nodes: context.nodes,
+      nps,
+      timeMs: Math.round(elapsedMs),
+      candidateMoves: lastResult,
+      isComplete: isDone,
+    };
+
+    if (onProgress) {
+      onProgress(stepResult);
+    }
+
+    // Early termination: if top candidate move is a forced mate / touchdown fully resolved
+    if (lastResult.length > 0 && lastResult[0].isMate) {
+      const pliesNeeded = lastResult[0].mateInPlies ?? 99;
+      if (pliesNeeded <= d) {
+        break;
+      }
+    }
+  }
+
+  const totalElapsed = Math.max(1, performance.now() - startTime);
+  return {
+    depth: achievedDepth,
+    maxDepth,
+    nodes: context.nodes,
+    nps: Math.round((context.nodes * 1000) / totalElapsed),
+    timeMs: Math.round(totalElapsed),
+    candidateMoves: lastResult,
+    isComplete: true,
+  };
 }

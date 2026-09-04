@@ -24,6 +24,7 @@ import type {
   TrainingStats,
   Checkpoint,
   WorkerResponse,
+  AnalysisTelemetry,
 } from '../engine/types';
 import {
   getStoredCheckpoints,
@@ -57,6 +58,7 @@ interface SavedSettings {
   selectedOpponentId?: string;
   isAnalysisEnabled?: boolean;
   analysisMaxRows?: number;
+  analysisTargetDepth?: number;
   tournamentZoomEnabled?: boolean;
   arenaSearchDepth?: number;
   trainingSearchDepth?: number;
@@ -164,6 +166,14 @@ export const IntransitiveStudio: React.FC = () => {
   const [analysisMaxRows, setAnalysisMaxRows] = useState<number>(
     initialSettings.analysisMaxRows ?? 3
   );
+  const [analysisTargetDepth, setAnalysisTargetDepth] = useState<number>(
+    initialSettings.analysisTargetDepth ?? 4
+  );
+  const [analysisTelemetry, setAnalysisTelemetry] = useState<AnalysisTelemetry | null>(null);
+
+  const handleTargetDepthChange = useCallback((depth: number) => {
+    setAnalysisTargetDepth(depth);
+  }, []);
 
   // Turbo Trainer Baseline & Snapshot State
   const [selectedBaselineId, setSelectedBaselineId] = useState<string>('preset-gen-0');
@@ -261,11 +271,65 @@ export const IntransitiveStudio: React.FC = () => {
     };
   }, [evalModelId, stats, weights, checkpoints]);
 
-  // Candidate moves for Human Play engine analysis (coupled with activeEvalModel)
+  // Synchronous candidate moves (instant baseline at Depth 2)
+  const syncCandidateMoves = useMemo(() => {
+    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return [];
+    return getTopMoves(game, activeEvalModel.weights, 5, Math.min(2, analysisTargetDepth));
+  }, [activeTab, isAnalysisEnabled, game, activeEvalModel, analysisTargetDepth]);
+
+  // Combined candidate moves: prefer deeper worker iterative results matching current position
   const candidateMoves = useMemo(() => {
     if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return [];
-    return getTopMoves(game, activeEvalModel.weights, analysisMaxRows, arenaSearchDepth);
-  }, [activeTab, isAnalysisEnabled, game, activeEvalModel, analysisMaxRows, arenaSearchDepth]);
+    const currentFen = game.toFEN();
+    if (
+      analysisTelemetry &&
+      analysisTelemetry.currentFen === currentFen &&
+      analysisTelemetry.candidateMoves.length > 0
+    ) {
+      return analysisTelemetry.candidateMoves;
+    }
+    return syncCandidateMoves;
+  }, [activeTab, isAnalysisEnabled, game, analysisTelemetry, syncCandidateMoves]);
+
+  // Derived real-time telemetry: reflects worker progress or instantaneous depth-2 baseline
+  const displayedTelemetry = useMemo((): AnalysisTelemetry | null => {
+    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return null;
+    const currentFen = game.toFEN();
+    if (analysisTelemetry && analysisTelemetry.currentFen === currentFen) {
+      return analysisTelemetry;
+    }
+    return {
+      depth: Math.min(2, analysisTargetDepth),
+      maxDepth: analysisTargetDepth,
+      nodes: 0,
+      nps: 0,
+      timeMs: 0,
+      candidateMoves: syncCandidateMoves,
+      isSearching: true,
+      currentFen,
+    };
+  }, [activeTab, isAnalysisEnabled, game, analysisTelemetry, analysisTargetDepth, syncCandidateMoves]);
+
+  // Background iterative deepening engine analysis trigger
+  useEffect(() => {
+    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) {
+      workerRef.current?.postMessage({ type: 'STOP_ANALYSIS' });
+      return;
+    }
+
+    const currentFen = game.toFEN();
+    workerRef.current?.postMessage({
+      type: 'START_ANALYSIS',
+      currentFen,
+      weights: activeEvalModel.weights,
+      maxDepth: analysisTargetDepth,
+      count: 5,
+    });
+
+    return () => {
+      workerRef.current?.postMessage({ type: 'STOP_ANALYSIS' });
+    };
+  }, [game, activeTab, isAnalysisEnabled, activeEvalModel, analysisTargetDepth]);
 
   // Persist settings on change
   useEffect(() => {
@@ -275,6 +339,7 @@ export const IntransitiveStudio: React.FC = () => {
       selectedOpponentId,
       isAnalysisEnabled,
       analysisMaxRows,
+      analysisTargetDepth,
       tournamentZoomEnabled,
       arenaSearchDepth,
       trainingSearchDepth,
@@ -290,6 +355,7 @@ export const IntransitiveStudio: React.FC = () => {
     selectedOpponentId,
     isAnalysisEnabled,
     analysisMaxRows,
+    analysisTargetDepth,
     tournamentZoomEnabled,
     arenaSearchDepth,
     trainingSearchDepth,
@@ -385,6 +451,34 @@ export const IntransitiveStudio: React.FC = () => {
             setIsZoomingTournament(false);
             if (soundEnabledRef.current) sounds.playVictory();
           }
+          break;
+        }
+
+        case 'ANALYSIS_PROGRESS': {
+          setAnalysisTelemetry({
+            depth: data.depth,
+            maxDepth: data.maxDepth,
+            nodes: data.nodes,
+            nps: data.nps,
+            timeMs: data.timeMs,
+            candidateMoves: data.candidateMoves,
+            isSearching: true,
+            currentFen: data.currentFen,
+          });
+          break;
+        }
+
+        case 'ANALYSIS_COMPLETE': {
+          setAnalysisTelemetry({
+            depth: data.depth,
+            maxDepth: data.maxDepth,
+            nodes: data.nodes,
+            nps: data.nps,
+            timeMs: data.timeMs,
+            candidateMoves: data.candidateMoves,
+            isSearching: false,
+            currentFen: data.currentFen,
+          });
           break;
         }
 
@@ -1171,7 +1265,7 @@ export const IntransitiveStudio: React.FC = () => {
               lastMove={lastMove}
               isInteractive={isHumanTurn}
               flipped={isBoardFlipped}
-              arrows={activeTab === 'play' && isAnalysisEnabled ? candidateMoves : []}
+              arrows={activeTab === 'play' && isAnalysisEnabled ? candidateMoves.slice(0, analysisMaxRows) : []}
             />
 
             {/* Bottom Controls: LiveControls for Visual Arena, Human Controls Bar for Human Play */}
@@ -1302,6 +1396,9 @@ export const IntransitiveStudio: React.FC = () => {
                   candidateMoves={candidateMoves}
                   onApplyMove={handleHumanMove}
                   isHumanTurn={isHumanTurn}
+                  telemetry={displayedTelemetry}
+                  targetDepth={analysisTargetDepth}
+                  onChangeTargetDepth={handleTargetDepthChange}
                 />
 
                 <MoveListSection

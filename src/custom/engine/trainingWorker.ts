@@ -5,13 +5,14 @@
 
 import { IntransitiveGame } from '../core/game';
 import { createZeroWeights } from './evaluator';
-import { selectMove } from './search';
+import { selectMove, getTopMoves } from './search';
 import { SelfPlayTrainer } from './trainer';
 import type {
   WorkerRequest,
   WorkerResponse,
   EvaluationWeights,
   TrainingConfig,
+  RankedMove,
 } from './types';
 
 // Worker state
@@ -19,6 +20,7 @@ let currentWeights: EvaluationWeights = createZeroWeights();
 let trainer = new SelfPlayTrainer(currentWeights);
 let isTurboRunning = false;
 let turboCancelled = false;
+let currentAnalysisId = 0;
 
 function post(response: WorkerResponse): void {
   self.postMessage(response);
@@ -161,6 +163,76 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         type: 'ARENA_RESULT',
         ...result,
       });
+      break;
+    }
+
+    case 'START_ANALYSIS': {
+      currentAnalysisId++;
+      const thisId = currentAnalysisId;
+      const targetFen = req.currentFen;
+      const game = new IntransitiveGame(targetFen);
+      const weights = req.weights ?? trainer.weights;
+      const maxDepth = req.maxDepth ?? 6;
+      const count = req.count ?? 5;
+      const startTime = performance.now();
+      const context = { nodes: 0 };
+      let currentDepth = 1;
+      let lastResult: RankedMove[] = [];
+
+      function stepDepth() {
+        if (thisId !== currentAnalysisId) return;
+
+        const moves = getTopMoves(game, weights, count, currentDepth, context);
+        if (thisId !== currentAnalysisId) return;
+        lastResult = moves;
+
+        const elapsedMs = Math.max(1, performance.now() - startTime);
+        const nps = Math.round((context.nodes * 1000) / elapsedMs);
+        const isDone = currentDepth >= maxDepth;
+
+        post({
+          type: isDone ? 'ANALYSIS_COMPLETE' : 'ANALYSIS_PROGRESS',
+          depth: currentDepth,
+          maxDepth,
+          nodes: context.nodes,
+          nps,
+          timeMs: Math.round(elapsedMs),
+          candidateMoves: lastResult,
+          currentFen: targetFen,
+        });
+
+        // Early termination if top candidate move is a forced mate / touchdown fully resolved
+        if (lastResult.length > 0 && lastResult[0].isMate) {
+          const pliesNeeded = lastResult[0].mateInPlies ?? 99;
+          if (pliesNeeded <= currentDepth) {
+            if (!isDone) {
+              post({
+                type: 'ANALYSIS_COMPLETE',
+                depth: currentDepth,
+                maxDepth,
+                nodes: context.nodes,
+                nps,
+                timeMs: Math.round(elapsedMs),
+                candidateMoves: lastResult,
+                currentFen: targetFen,
+              });
+            }
+            return;
+          }
+        }
+
+        currentDepth++;
+        if (currentDepth <= maxDepth) {
+          setTimeout(stepDepth, 0);
+        }
+      }
+
+      stepDepth();
+      break;
+    }
+
+    case 'STOP_ANALYSIS': {
+      currentAnalysisId++;
       break;
     }
 

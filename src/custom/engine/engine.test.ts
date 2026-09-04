@@ -11,7 +11,7 @@ import {
 } from './evaluator';
 import { TDLearner, type TrajectoryStep } from './tdLearner';
 import { SelfPlayTrainer } from './trainer';
-import { getTopMoves, formatEvalScore } from './search';
+import { getTopMoves, formatEvalScore, runIterativeDeepeningAnalysis } from './search';
 import {
   PRESET_CHECKPOINTS,
   saveCheckpoint,
@@ -169,12 +169,12 @@ console.log('✓ Checkpoint saving, loading, and JSON export/import verified');
 
 // 6. Arena Head-to-Head Tournament
 console.log('\n--- 6. Head-to-Head Checkpoint Arena Exhibition ---');
-const arenaGames = 6;
+const arenaGames = 10;
 const arenaResult = SelfPlayTrainer.runArenaTournament(
   heuristicWeights, // Player A (Hand-tuned heuristic)
   createZeroWeights(), // Player B (Untrained zero weights)
   arenaGames,
-  1
+  2
 );
 
 console.log(
@@ -259,5 +259,42 @@ for (let i = 0; i < 55; i++) {
 assert(leagueTrainer.leagueBuffer.length >= 2, 'League buffer must store historical snapshots at generation 50');
 assert(!isNaN(leagueTrainer.weights.pieceValues.R), 'Weights must remain finite valid numbers');
 console.log(`✓ Verified Historical League Buffer populated (${leagueTrainer.leagueBuffer.length} snapshots), weights stable.`);
+
+// 11. Iterative Deepening & Multi-ply Forced Touchdown (Mate-in-4) Detection
+console.log('\n--- 11. Iterative Deepening & Multi-ply Forced Touchdown (+M2) Detection ---');
+// Position: Blue has Rock on g7 (sq 60), Red has Rock on e5 (sq 40) in the center
+// g7 is 2 steps from i9 (sq 80) goal: g7 -> h8 (sq 70) -> i9 (sq 80, touchdown!)
+// FEN: 9/9/6R2/9/4r4/9/9/9/9 b 0 1
+const mateGame = new IntransitiveGame('9/9/6R2/9/4r4/9/9/9/9 b 0 1');
+const testWeights = createHeuristicWeights();
+
+// At Depth 2: search only sees 2 plies, so it cannot resolve touchdown at ply 3
+const depth2Moves = getTopMoves(mateGame, testWeights, 3, 2);
+assert(depth2Moves.length > 0, 'Must generate legal moves');
+assert(!depth2Moves[0].isMate, 'Depth 2 must not prematurely claim a mate it cannot see at ply 2');
+
+// At Depth 4: iterative deepening reaches touchdown at ply 3, detecting forced win!
+const progressSteps: number[] = [];
+const analysis = runIterativeDeepeningAnalysis(
+  mateGame,
+  testWeights,
+  4,
+  5,
+  (step) => {
+    progressSteps.push(step.depth);
+  }
+);
+
+assert(progressSteps.length >= 2, 'Iterative deepening must stream progress steps');
+assert(analysis.candidateMoves.length > 0, 'Analysis must yield candidate moves');
+const bestCand = analysis.candidateMoves[0];
+assert(bestCand.isMate === true, 'Iterative deepening at depth 4 must detect forced touchdown');
+assert(bestCand.mateInPlies !== undefined && bestCand.mateInPlies <= 4, 'Mate must be within 4 plies');
+assert(Boolean(bestCand.threat?.includes('Forced Win')), 'Threat descriptor must label 🏆 Forced Win');
+const formattedScore = formatEvalScore(bestCand.score, bestCand.isMate, bestCand.mateInPlies);
+assert(formattedScore === '+M2' || formattedScore === '+M1', `Score must format as forced mate (+M2 or +M1), got ${formattedScore}`);
+assert(analysis.nodes > 0, 'Analysis must report non-zero searched nodes');
+assert(analysis.nps > 0, 'Analysis must report non-zero speed NPS');
+console.log(`✓ Iterative Deepening solved forced touchdown: ${bestCand.san} (${formattedScore}, ${bestCand.threat}) in ${analysis.nodes} nodes at ${analysis.nps} NPS (${analysis.timeMs}ms)`);
 
 console.log('\n🎉 ALL INTRANSITIVE TD-LEARNING & ENGINE TESTS PASSED WITH 100% ACCURACY!');

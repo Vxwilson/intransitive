@@ -1860,5 +1860,166 @@ body.theme-intransitive-warm {
   margin-bottom: 0.35rem;
 }
 
+/* ==========================================================================
+   THINKING DASHBOARD & TELEMETRY PANEL
+   ========================================================================== */
+.intransitive-telemetry-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.65rem 0.8rem;
+  background: #faf8f5;
+  border: 1px solid #e8e2d8;
+  border-radius: 12px;
+}
+
+.intransitive-telemetry-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.intransitive-telemetry-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #524a42;
+}
+
+.intransitive-telemetry-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a8a095;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.intransitive-telemetry-pulse-dot.active {
+  background: #059669;
+  box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.7);
+  animation: intransitivePulse 1.4s infinite;
+}
+
+@keyframes intransitivePulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 5px rgba(5, 150, 105, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(5, 150, 105, 0);
+  }
+}
+
+.intransitive-telemetry-eval-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #e2d9cc;
+  background: #ffffff;
+  color: #2b2520;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.intransitive-telemetry-eval-badge.mate-lead {
+  background: #ecfdf5;
+  border-color: #34d399;
+  color: #047857;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.25);
+}
+
+.intransitive-telemetry-eval-badge.mate-trail {
+  background: #fef2f2;
+  border-color: #f87171;
+  color: #b91c1c;
+}
+
+.intransitive-telemetry-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.4rem;
+}
+
+.intransitive-telemetry-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.35rem 0.5rem;
+  background: #ffffff;
+  border: 1px solid #e8e2d8;
+  border-radius: 8px;
+}
+
+.intransitive-telemetry-cell-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8c827a;
+}
+
+.intransitive-telemetry-cell-val {
+  font-size: 0.76rem;
+  font-weight: 800;
+  color: #241e19;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Forced Touchdown / Mate Highlighting in Candidate Rows */
+.intransitive-candidate-row.is-mate-win {
+  border-color: #34d399;
+  background: linear-gradient(to right, #ffffff, #f0fdf4);
+  box-shadow: 0 1px 4px rgba(5, 150, 105, 0.08);
+}
+
+.intransitive-candidate-row.is-mate-win:hover:not(:disabled) {
+  border-color: #059669;
+  background: #ecfdf5;
+}
+
+.intransitive-mate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #6ee7b7;
+  letter-spacing: 0.02em;
+}
+
+.intransitive-score-mate {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 6px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  color: #047857;
+  font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+
 
 
