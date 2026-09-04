@@ -58,6 +58,8 @@ interface SavedSettings {
   isAnalysisEnabled?: boolean;
   analysisMaxRows?: number;
   tournamentZoomEnabled?: boolean;
+  arenaSearchDepth?: number;
+  learningRateAnnealing?: boolean;
   soundEnabled?: boolean;
   delayMs?: number;
   fighterAId?: string;
@@ -132,6 +134,12 @@ export const IntransitiveStudio: React.FC = () => {
   const [fighterBId, setFighterBId] = useState<string>(initialSettings.fighterBId ?? 'preset-heuristic-master');
   const [tournamentZoomEnabled, setTournamentZoomEnabled] = useState<boolean>(
     initialSettings.tournamentZoomEnabled ?? true
+  );
+  const [arenaSearchDepth, setArenaSearchDepth] = useState<number>(
+    initialSettings.arenaSearchDepth ?? 2
+  );
+  const [learningRateAnnealing, setLearningRateAnnealing] = useState<boolean>(
+    initialSettings.learningRateAnnealing ?? true
   );
 
   // Human Play Settings
@@ -252,8 +260,8 @@ export const IntransitiveStudio: React.FC = () => {
   // Candidate moves for Human Play engine analysis (coupled with activeEvalModel)
   const candidateMoves = useMemo(() => {
     if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return [];
-    return getTopMoves(game, activeEvalModel.weights, analysisMaxRows, 2);
-  }, [activeTab, isAnalysisEnabled, game, activeEvalModel, analysisMaxRows]);
+    return getTopMoves(game, activeEvalModel.weights, analysisMaxRows, arenaSearchDepth);
+  }, [activeTab, isAnalysisEnabled, game, activeEvalModel, analysisMaxRows, arenaSearchDepth]);
 
   // Persist settings on change
   useEffect(() => {
@@ -264,6 +272,8 @@ export const IntransitiveStudio: React.FC = () => {
       isAnalysisEnabled,
       analysisMaxRows,
       tournamentZoomEnabled,
+      arenaSearchDepth,
+      learningRateAnnealing,
       soundEnabled,
       delayMs,
       fighterAId,
@@ -276,6 +286,8 @@ export const IntransitiveStudio: React.FC = () => {
     isAnalysisEnabled,
     analysisMaxRows,
     tournamentZoomEnabled,
+    arenaSearchDepth,
+    learningRateAnnealing,
     soundEnabled,
     delayMs,
     fighterAId,
@@ -442,6 +454,7 @@ export const IntransitiveStudio: React.FC = () => {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: game.toFEN(),
+          searchDepth: arenaSearchDepth,
           customWeights: fighterWeights,
         });
       }
@@ -450,7 +463,7 @@ export const IntransitiveStudio: React.FC = () => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPlayingLive, activeTab, game, delayMs, fighterAId, fighterBId, getWeightsById]);
+  }, [isPlayingLive, activeTab, game, delayMs, fighterAId, fighterBId, arenaSearchDepth, getWeightsById]);
 
   // Reset Game
   const handleResetGame = useCallback(() => {
@@ -483,11 +496,12 @@ export const IntransitiveStudio: React.FC = () => {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: game.toFEN(),
+          searchDepth: arenaSearchDepth,
           customWeights: watchWeights,
         });
       }
     }
-  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, getWeightsById]);
+  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, arenaSearchDepth, getWeightsById]);
 
   const handleStepBackward = useCallback(() => {
     if (historyIndex > 0) {
@@ -547,12 +561,13 @@ export const IntransitiveStudio: React.FC = () => {
           workerRef.current.postMessage({
             type: 'STEP_LIVE',
             currentFen: fenAfter,
+            searchDepth: arenaSearchDepth,
             customWeights: opponentWeights,
           });
         }
       }, 250);
     }
-  }, [game, soundEnabled, activeTab, selectedOpponentId, getWeightsById]);
+  }, [game, soundEnabled, activeTab, selectedOpponentId, arenaSearchDepth, getWeightsById]);
 
   // Start a fresh Human Game
   const handleStartHumanGame = useCallback((color: 'blue' | 'red', opponentId: string) => {
@@ -576,6 +591,7 @@ export const IntransitiveStudio: React.FC = () => {
           workerRef.current.postMessage({
             type: 'STEP_LIVE',
             currentFen: freshGame.toFEN(),
+            searchDepth: arenaSearchDepth,
             customWeights: opponentWeights,
           });
         }
@@ -583,7 +599,7 @@ export const IntransitiveStudio: React.FC = () => {
     } else {
       setIsBoardFlipped(false);
     }
-  }, [getWeightsById]);
+  }, [arenaSearchDepth, getWeightsById]);
 
   // Undo in Human Play (steps back 2 plies to human's turn)
   const handleUndoHumanMove = useCallback(() => {
@@ -603,9 +619,12 @@ export const IntransitiveStudio: React.FC = () => {
       workerRef.current.postMessage({
         type: 'START_TURBO',
         totalGames,
+        config: {
+          learningRateAnnealing,
+        },
       });
     }
-  }, []);
+  }, [learningRateAnnealing]);
 
   const handleStopTurbo = useCallback(() => {
     if (workerRef.current) {
@@ -692,7 +711,7 @@ export const IntransitiveStudio: React.FC = () => {
   }, [selectedBaselineId, stats, checkpoints]);
 
   // Arena Actions
-  const handleRunTournament = useCallback((cpA: Checkpoint, cpB: Checkpoint, games: number) => {
+  const handleRunTournament = useCallback((cpA: Checkpoint, cpB: Checkpoint, games: number, depth: number = arenaSearchDepth) => {
     setTournamentResult(null);
     if (tournamentZoomEnabled) {
       handleResetGame();
@@ -707,10 +726,11 @@ export const IntransitiveStudio: React.FC = () => {
         checkpointA: cpA,
         checkpointB: cpB,
         numGames: games,
+        searchDepth: depth,
         streamMoves: tournamentZoomEnabled,
       });
     }
-  }, [tournamentZoomEnabled, handleResetGame]);
+  }, [tournamentZoomEnabled, arenaSearchDepth, handleResetGame]);
 
   const handleExportJSON = useCallback(() => {
     const json = exportCheckpointsJSON();
@@ -1032,6 +1052,10 @@ export const IntransitiveStudio: React.FC = () => {
           onChangeMaxRows={setAnalysisMaxRows}
           tournamentZoomEnabled={tournamentZoomEnabled}
           onToggleTournamentZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
+          searchDepth={arenaSearchDepth}
+          onChangeSearchDepth={setArenaSearchDepth}
+          learningRateAnnealing={learningRateAnnealing}
+          onToggleAnnealing={() => setLearningRateAnnealing(!learningRateAnnealing)}
           delayMs={delayMs}
           onChangeDelayMs={setDelayMs}
           soundEnabled={soundEnabled}
@@ -1048,6 +1072,8 @@ export const IntransitiveStudio: React.FC = () => {
             setIsAnalysisEnabled(true);
             setAnalysisMaxRows(3);
             setTournamentZoomEnabled(true);
+            setArenaSearchDepth(2);
+            setLearningRateAnnealing(true);
             setSoundEnabled(true);
             setDelayMs(300);
             setFighterAId('current');
@@ -1234,6 +1260,8 @@ export const IntransitiveStudio: React.FC = () => {
                     handleResetGame();
                   }}
                   onRunTournament={handleRunTournament}
+                  searchDepth={arenaSearchDepth}
+                  onChangeSearchDepth={setArenaSearchDepth}
                   onExportJSON={handleExportJSON}
                   onImportJSON={handleImportJSON}
                   tournamentResult={tournamentResult}

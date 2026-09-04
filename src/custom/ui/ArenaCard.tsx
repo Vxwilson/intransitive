@@ -14,7 +14,9 @@ interface ArenaCardProps {
   fighterBId: string;
   onChangeFighterA?: (id: string) => void;
   onChangeFighterB?: (id: string) => void;
-  onRunTournament: (cpA: Checkpoint, cpB: Checkpoint, games: number) => void;
+  onRunTournament: (cpA: Checkpoint, cpB: Checkpoint, games: number, searchDepth: number) => void;
+  searchDepth: number;
+  onChangeSearchDepth: (depth: number) => void;
   onExportJSON: () => void;
   onImportJSON: (json: string) => void;
   tournamentResult: {
@@ -39,6 +41,8 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
   fighterAId,
   fighterBId,
   onRunTournament,
+  searchDepth,
+  onChangeSearchDepth,
   onExportJSON,
   onImportJSON,
   tournamentResult,
@@ -64,7 +68,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
 
   const handleSimulate = () => {
     const games = Math.max(1, Math.min(2000, Number(customGames) || 20));
-    onRunTournament(checkpointA, checkpointB, games);
+    onRunTournament(checkpointA, checkpointB, games, searchDepth);
   };
 
   return (
@@ -118,6 +122,42 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
             </button>
           </div>
         )}
+
+        {/* Engine Search Depth Selector Row */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0.4rem 0.65rem',
+            background: '#faf8f5',
+            borderRadius: '8px',
+            border: '1px solid #eee8de',
+            fontSize: '0.74rem',
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600, color: '#4a4239' }}>
+            <Activity size={13} color="#7c3aed" /> Engine Search Depth:
+          </span>
+          <div className="intransitive-mini-btn-group">
+            {[
+              { d: 1, label: 'Depth 1 (Fast)' },
+              { d: 2, label: 'Depth 2 (Tactical)' },
+              { d: 3, label: 'Depth 3 (Deep)' },
+            ].map(({ d, label }) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => onChangeSearchDepth(d)}
+                className={`intransitive-mini-btn ${searchDepth === d ? 'active' : ''}`}
+                style={{ padding: '0.2rem 0.55rem', fontSize: '0.7rem' }}
+                title={`Simulate and analyze moves at Minimax Depth ${d}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {/* AlphaZero Dynamic Opening Exploration Indicator */}
         <div

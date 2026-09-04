@@ -5,6 +5,7 @@
 
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import type { Move } from '../core/types';
+import { BLUE_GOAL_SQUARE, RED_GOAL_SQUARE } from '../core/constants';
 import type { IntransitiveGame } from '../core/game';
 import type { EvaluationWeights, RankedMove } from './types';
 import { evaluate, WIN_SCORE, LOSS_SCORE, DRAW_SCORE } from './evaluator';
@@ -62,6 +63,19 @@ export function minimax(
     if (term.winner === PLAYER_BLUE) return WIN_SCORE - ply;
     if (term.winner === PLAYER_RED) return LOSS_SCORE + ply;
     return evaluate(game, weights);
+  }
+
+  // Tactical move ordering: prioritize touchdown wins and captures to maximize alpha-beta cutoffs
+  if (depth > 1 && moves.length > 1) {
+    const goalSquare = game.activePlayer === PLAYER_BLUE ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
+    moves.sort((a, b) => {
+      const aGoal = a.to === goalSquare ? 10000 : 0;
+      const bGoal = b.to === goalSquare ? 10000 : 0;
+      if (aGoal !== bGoal) return bGoal - aGoal;
+      const aCap = a.captured !== undefined ? 1000 : 0;
+      const bCap = b.captured !== undefined ? 1000 : 0;
+      return bCap - aCap;
+    });
   }
 
   const isMaximizing = game.activePlayer === PLAYER_BLUE;

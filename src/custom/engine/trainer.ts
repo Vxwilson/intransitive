@@ -177,11 +177,12 @@ export class SelfPlayTrainer {
       }
     }
 
-    // Apply TD-Leaf update
-    this.learner.updateWeights(this.weights, trajectory, terminalReward);
+    // Apply TD-Leaf update with generation-based annealing
+    this.learner.updateWeights(this.weights, trajectory, terminalReward, this.stats.generation);
 
     this.stats.gamesPlayed++;
     this.stats.generation++;
+    this.stats.currentAlpha = this.learner.getEffectiveLearningRate(this.stats.generation);
 
     // Update game length tracking
     const plies = moves.length;

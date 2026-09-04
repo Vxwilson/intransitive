@@ -36,6 +36,10 @@ interface StudioSettingsCardProps {
   onChangeMaxRows: (rows: number) => void;
   tournamentZoomEnabled: boolean;
   onToggleTournamentZoom: () => void;
+  searchDepth: number;
+  onChangeSearchDepth: (depth: number) => void;
+  learningRateAnnealing: boolean;
+  onToggleAnnealing: () => void;
   delayMs: number;
   onChangeDelayMs: (ms: number) => void;
   soundEnabled: boolean;
@@ -62,6 +66,10 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
   onChangeMaxRows,
   tournamentZoomEnabled,
   onToggleTournamentZoom,
+  searchDepth,
+  onChangeSearchDepth,
+  learningRateAnnealing,
+  onToggleAnnealing,
   delayMs,
   onChangeDelayMs,
   soundEnabled,
@@ -100,73 +108,102 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
         <button
           type="button"
           onClick={onResetSettings}
-          className="intransitive-btn-secondary mini"
-          title="Reset all settings to factory defaults"
+          title="Reset all settings to default values"
+          className="intransitive-icon-btn"
+          style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.45rem 0.75rem', fontSize: '0.75rem', width: 'auto' }}
         >
-          <RotateCcw size={12} /> Reset Defaults
+          <RotateCcw size={14} />
+          <span>Reset Defaults</span>
         </button>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '1.25rem', marginTop: '0.75rem' }}>
-        {/* Section 1: Coupled Evaluation & Engine Analysis Model */}
+      {/* Grid Settings Layout */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginTop: '1rem' }}>
+        {/* Section 1: Coupled Master Model Picker */}
         <div className="intransitive-settings-box">
           <div className="intransitive-settings-box-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <BrainCircuit size={16} color="#c2410c" />
+              <BrainCircuit size={16} color="#7c3aed" />
               <h4 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 700, color: '#2b2520' }}>
-                Coupled Evaluator & Analysis Model
+                Master Evaluation Engine
               </h4>
             </div>
-            <span style={{ fontSize: '0.68rem', color: '#c2410c', fontWeight: 700, background: '#ffedd5', padding: '0.2rem 0.5rem', borderRadius: '6px' }}>
-              Master Engine
+            <span style={{ fontSize: '0.68rem', color: '#7c3aed', fontWeight: 600, background: '#f5f3ff', padding: '0.15rem 0.45rem', borderRadius: '4px', border: '1px solid #ddd6fe' }}>
+              Coupled System
             </span>
           </div>
 
-          <p style={{ fontSize: '0.74rem', color: '#786f66', lineHeight: 1.4, margin: '0.4rem 0 0.75rem 0' }}>
-            This single model dictates both <strong>board live evaluations</strong> (+/- cp) across all tabs and the <strong>candidate move arrows</strong> in Human Play.
+          <p style={{ fontSize: '0.74rem', color: '#6b635b', margin: '0.4rem 0 0.75rem 0', lineHeight: 1.4 }}>
+            Selects the active AI checkpoint used for <strong>live board centipawn evaluation</strong>, <strong>evaluation bar advantage</strong>, and <strong>Human Play tactical candidate move generation</strong>.
           </p>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-            <label htmlFor="settings-eval-model" style={{ fontSize: '0.72rem', fontWeight: 700, color: '#4a4239' }}>
-              Active Model:
-            </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
             <select
-              id="settings-eval-model"
               value={evalModelId}
               onChange={(e) => onChangeEvalModelId(e.target.value)}
               className="intransitive-dropdown"
-              style={{ width: '100%', padding: '0.45rem 0.75rem', fontSize: '0.8rem', fontWeight: 600 }}
+              style={{ minWidth: '240px', fontWeight: 600 }}
             >
-              <option value="preset-heuristic-master">🏆 Heuristic Master (Boss / Expert)</option>
-              <option value="current">🤖 Current Training Model (Gen {currentGeneration})</option>
-              <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Untrained / Zero)</option>
+              <option value="preset-heuristic-master">🏆 Heuristic Master (Baseline Handcrafted)</option>
+              <option value="current">🤖 Current In-Memory Model (Gen {currentGeneration})</option>
+              <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Untrained Zeros)</option>
               {checkpoints
                 .filter((c) => !c.id.startsWith('preset-'))
                 .map((c) => (
                   <option key={c.id} value={c.id}>
-                    💾 {c.name} (Gen {c.generation})
+                    💾 {c.name}
                   </option>
                 ))}
             </select>
+
+            <span style={{ fontSize: '0.72rem', color: '#059669', fontWeight: 600 }}>
+              ✓ Actively evaluating
+            </span>
           </div>
         </div>
 
-        {/* Section 2: Visual Arena & Tournament Zoom */}
+        {/* Section 2: Visual Arena & Engine Defaults */}
         <div className="intransitive-settings-box">
           <div className="intransitive-settings-box-header">
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-              <Swords size={16} color="#7c3aed" />
+              <Swords size={16} color="#ea580c" />
               <h4 style={{ margin: 0, fontSize: '0.85rem', fontWeight: 700, color: '#2b2520' }}>
-                Visual Arena & Simulation
+                Visual Arena & Engine Lookahead
               </h4>
             </div>
-            <span style={{ fontSize: '0.68rem', color: '#7c3aed', fontWeight: 700, background: '#f5f3ff', padding: '0.2rem 0.5rem', borderRadius: '6px' }}>
-              Tournament Mode
-            </span>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem', marginTop: '0.6rem' }}>
-            {/* Live Board Zoom Toggle */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginTop: '0.6rem' }}>
+            {/* Search Depth Selector */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#2b2520', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <BrainCircuit size={14} color="#7c3aed" /> Engine Search Depth
+                </span>
+                <p style={{ fontSize: '0.7rem', color: '#786f66', margin: '0.15rem 0 0 0' }}>
+                  Minimax lookahead for Visual Arena live matches and tournament simulations
+                </p>
+              </div>
+              <div className="intransitive-mini-btn-group">
+                {[
+                  { d: 1, label: 'Depth 1 (Fast)' },
+                  { d: 2, label: 'Depth 2 (Tactical)' },
+                  { d: 3, label: 'Depth 3 (Deep)' },
+                ].map(({ d, label }) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => onChangeSearchDepth(d)}
+                    className={`intransitive-mini-btn ${searchDepth === d ? 'active' : ''}`}
+                    style={{ padding: '0.25rem 0.55rem', fontSize: '0.7rem' }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Fast Board Zoom Toggle */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
                 <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#2b2520', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
@@ -183,6 +220,26 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                 style={{ padding: '0.35rem 0.75rem', fontWeight: 700 }}
               >
                 {tournamentZoomEnabled ? 'Enabled' : 'Disabled'}
+              </button>
+            </div>
+
+            {/* Learning Rate Annealing Toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#2b2520', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <Sparkles size={14} color="#2563eb" /> Adaptive LR Annealing
+                </span>
+                <p style={{ fontSize: '0.7rem', color: '#786f66', margin: '0.15rem 0 0 0' }}>
+                  Decays step size smoothly as generations advance to stabilize mature models against swings
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onToggleAnnealing}
+                className={`intransitive-mini-btn ${learningRateAnnealing ? 'active' : ''}`}
+                style={{ padding: '0.35rem 0.75rem', fontWeight: 700 }}
+              >
+                {learningRateAnnealing ? 'Adaptive Schedule' : 'Fixed (0.015)'}
               </button>
             </div>
 

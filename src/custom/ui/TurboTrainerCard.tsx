@@ -234,6 +234,9 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
             <strong style={{ color: '#292524' }}>Softmax Temp:</strong> τ=24 cp → 10 cp → 0 (Greedy)
           </div>
           <div>
+            <strong style={{ color: '#292524' }}>Adaptive LR:</strong> α={stats.currentAlpha !== undefined ? stats.currentAlpha.toFixed(4) : '0.0150'} (Annealed)
+          </div>
+          <div>
             <strong style={{ color: '#292524' }}>Opponent Mix:</strong> 65% Self / 20% League / 15% Anchor
           </div>
           <div>

@@ -17,6 +17,7 @@ export class TDLearner {
   constructor(config: Partial<TrainingConfig> = {}) {
     this.config = {
       learningRate: config.learningRate ?? 0.015,
+      learningRateAnnealing: config.learningRateAnnealing ?? true,
       lambda: config.lambda ?? 0.7,
       epsilon: config.epsilon ?? 0.10,
       searchDepth: config.searchDepth ?? 1,
@@ -25,21 +26,37 @@ export class TDLearner {
   }
 
   /**
+   * Computes current effective learning rate based on generation count.
+   * Uses square-root decay schedule: alpha(gen) = max(0.002, alpha_0 / sqrt(1 + gen / 2500)).
+   */
+  public getEffectiveLearningRate(generation: number = 0): number {
+    const base = this.config.learningRate;
+    if (this.config.learningRateAnnealing === false) {
+      return base;
+    }
+    const decayed = base / Math.sqrt(1 + Math.max(0, generation) / 2500);
+    return Math.max(0.002, decayed);
+  }
+
+  /**
    * Applies TD(lambda) updates to the weights using the game trajectory and terminal outcome.
    *
    * @param weights Current evaluation weights (mutated in-place and returned)
    * @param trajectory Sequence of state feature vectors and evaluations during the game
    * @param terminalOutcome Terminal reward: +1000 (Blue Win), -1000 (Red Win), 0 (Draw)
+   * @param currentGeneration Optional generation index for learning rate annealing
    */
   public updateWeights(
     weights: EvaluationWeights,
     trajectory: TrajectoryStep[],
-    terminalOutcome: number
+    terminalOutcome: number,
+    currentGeneration: number = 0
   ): EvaluationWeights {
     const T = trajectory.length;
     if (T === 0) return weights;
 
-    const { learningRate, lambda } = this.config;
+    const { lambda } = this.config;
+    const effectiveAlpha = this.getEffectiveLearningRate(currentGeneration);
 
     // Compute TD errors: delta_t = V(s_{t+1}) - V(s_t)
     const deltas: number[] = new Array(T);
@@ -72,7 +89,7 @@ export class TDLearner {
     const dPstS = new Float32Array(NUM_SQUARES);
 
     // Scaling factor to normalize step size across game length
-    const scale = learningRate / Math.sqrt(T);
+    const scale = effectiveAlpha / Math.sqrt(T);
 
     for (let t = 0; t < T; t++) {
       const err = E[t] * scale;

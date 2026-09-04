@@ -99,14 +99,19 @@ Empirical validation following the AlphaZero exploration and TD-Leaf stabilizati
 1. **Defeating Baseline `1150`**:
    - Both freshly trained models (**Gen 1650** and **Gen 4150**) decisively dominated the legacy `Gen 1150` checkpoint in tournament play.
    - In head-to-head match-ups between **Gen 4150 vs Gen 1650**, Gen 4150 edged out Gen 1650 slightly (29% to 28% win rate, 43% draw rate, 62 average plies), confirming stable, non-degenerative skill progression.
-2. **Weight Fluctuation & Intransitive Limit Cycles**:
-   - In cyclic games ($R > S > P > R$), piece valuations oscillate naturally around the Nash equilibrium (Limit Cycles / Red Queen dynamics). When Rock becomes popular, the policy learns to counter with Paper, shifting weights dynamically.
-   - With a constant learning rate $\alpha = 0.015$, 300 games triggers $\approx 18,000$ gradient updates. When comparing late generations (e.g. Gen 10,000 vs Gen 10,300), weight swings can cause temporary shifts in tactical style unless learning rate annealing is used.
+2. **Weight Fluctuation, Intransitive Limit Cycles & LR Annealing**:
+   - In cyclic games ($R > S > P > R$), piece valuations oscillate naturally around the Nash equilibrium (Limit Cycles / Red Queen dynamics).
+   - An **Adaptive Learning Rate Annealing Schedule** is now active in `TDLearner`:
+     $$\alpha(\text{gen}) = \max\left(0.002, \frac{\alpha_0}{\sqrt{1 + \frac{\text{gen}}{2500}}}\right)$$
+     This provides discovery agility early on ($\alpha = 0.0150 \to 0.0127$ for Gen 0–1,000) while dampening erratic step sizes at high generations ($\alpha = 0.0067$ at Gen 10,000), preventing wild 300-game swings.
 3. **Goal Proximity vs Playing Strength**:
    - A moderate or low goal proximity weight ($10\text{–}25\text{ cp}$) does **not** signify a weak model. High goal proximity ($>70$) often induces "touchdown tunnel vision" (recklessly advancing a single piece into enemy capture traps). A moderate goal weight combined with resilient piece values yields strong defensive positional play and counter-captures.
-4. **Search Depth Architecture**:
-   - **Watch Live Match (`STEP_LIVE`)**: Executes at **Depth 2** with minimax alpha-beta lookahead, providing deep tactical awareness in ~3–5ms per move.
-   - **Tournament Simulation (`ARENA_RUN`)**: Runs at **Depth 1** by default to allow high-throughput simulation of up to 100 complete games in ~300ms without freezing the worker or UI thread.
+4. **Multi-Level Search Depth Architecture (Depths 1, 2, and 3)**:
+   - Configurable across **both Live Matches and Headless Tournament Simulations**:
+     - **Depth 1 (Fast)**: Immediate 1-ply static evaluation (~0.1ms/move, ideal for instant 100-game tournaments).
+     - **Depth 2 (Tactical)**: 2-ply minimax lookahead with opponent response modeling (~3–5ms/move, balanced default).
+     - **Depth 3 (Deep Lookahead)**: 3-ply minimax search with move ordering (~40–80ms/move, deep tactical conversion).
+   - Selectable via interactive segmented controls in the Visual Arena tab and persistent in the Settings tab (`chessesque_intransitive_settings_v1`).
 
 ---
 

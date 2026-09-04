@@ -23,10 +23,11 @@ export interface EvaluationWeights {
 }
 
 export interface TrainingConfig {
-  learningRate: number; // alpha, e.g. 0.02
+  learningRate: number; // alpha, e.g. 0.015
+  learningRateAnnealing?: boolean; // whether to anneal alpha with generation count
   lambda: number;       // eligibility trace decay, e.g. 0.7
   epsilon: number;      // exploration probability, e.g. 0.10
-  searchDepth: number;  // 1 or 2
+  searchDepth: number;  // 1, 2, or 3
   maxPliesPerGame: number;
 }
 
@@ -53,6 +54,7 @@ export interface TrainingStats {
   immobilizations?: number;
   shortestGamePlies?: number;
   longestGamePlies?: number;
+  currentAlpha?: number;
 }
 
 export interface RankedMove {
@@ -95,8 +97,8 @@ export interface StateFeatures {
 export type WorkerRequest =
   | { type: 'START_TURBO'; totalGames: number; config?: Partial<TrainingConfig> }
   | { type: 'STOP_TURBO' }
-  | { type: 'STEP_LIVE'; currentFen?: string; config?: Partial<TrainingConfig>; customWeights?: EvaluationWeights }
-  | { type: 'ARENA_RUN'; checkpointA: Checkpoint; checkpointB: Checkpoint; numGames: number; streamMoves?: boolean }
+  | { type: 'STEP_LIVE'; currentFen?: string; searchDepth?: number; config?: Partial<TrainingConfig>; customWeights?: EvaluationWeights }
+  | { type: 'ARENA_RUN'; checkpointA: Checkpoint; checkpointB: Checkpoint; numGames: number; searchDepth?: number; streamMoves?: boolean }
   | { type: 'SET_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
   | { type: 'SYNC_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
   | { type: 'RESET_TRAINING' };

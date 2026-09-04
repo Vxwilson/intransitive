@@ -95,7 +95,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
     case 'STEP_LIVE': {
       const game = new IntransitiveGame(req.currentFen);
-      const searchDepth = req.config?.searchDepth ?? 2;
+      const searchDepth = req.searchDepth ?? req.config?.searchDepth ?? 2;
       const weightsToUse = req.customWeights ?? trainer.weights;
 
       // AlphaZero dynamic live play: Use Softmax temperature (T = 15 cp) for opening plies (0..3)
@@ -142,11 +142,12 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     case 'ARENA_RUN': {
+      const depth = req.searchDepth ?? 1;
       const result = SelfPlayTrainer.runArenaTournament(
         req.checkpointA.weights,
         req.checkpointB.weights,
         req.numGames,
-        1,
+        depth,
         req.streamMoves
           ? (moveData) => {
               post({
