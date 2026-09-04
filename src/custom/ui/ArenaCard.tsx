@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { Trophy, Download, Upload, Dices, Target, Activity, Zap } from 'lucide-react';
+import { Trophy, Download, Upload, Dices, Target, Activity, Zap, Sparkles } from 'lucide-react';
 import type { Checkpoint } from '../engine/types';
 
 interface ArenaCardProps {
@@ -118,6 +118,29 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
             </button>
           </div>
         )}
+
+        {/* AlphaZero Dynamic Opening Exploration Indicator */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0.38rem 0.65rem',
+            background: '#f8fafc',
+            borderRadius: '8px',
+            border: '1px solid #e2e8f0',
+            fontSize: '0.72rem',
+            color: '#334155',
+          }}
+        >
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}>
+            <Sparkles size={13} color="#2563eb" />
+            <span>AlphaZero Dynamic Branching:</span>
+          </span>
+          <span style={{ color: '#059669', fontWeight: 600, fontSize: '0.7rem' }}>
+            τ=15 cp Opening Variety Active
+          </span>
+        </div>
 
         <div className="intransitive-simulate-controls">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', flex: 1 }}>

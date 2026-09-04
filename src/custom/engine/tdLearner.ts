@@ -81,7 +81,8 @@ export class TDLearner {
       dR += err * feat.materialR;
       dP += err * feat.materialP;
       dS += err * feat.materialS;
-      dGoal += err * feat.goalDistanceAdvantage;
+      // Normalize goal gradient to match material feature scale (goal proximity sums across 12 pieces)
+      dGoal += (err * feat.goalDistanceAdvantage) * 0.1;
       dThreat += err * feat.threatAdvantage;
       dVuln += err * feat.vulnerabilityAdvantage;
       dTempo += err * feat.tempoAdvantage;
@@ -93,28 +94,29 @@ export class TDLearner {
       }
     }
 
-    // Apply updates with minimum pawn floor of 1.0 (pieces never become 0-value liabilities)
-    let newR = Math.max(1.0, Math.min(300, weights.pieceValues.R + dR));
-    let newP = Math.max(1.0, Math.min(300, weights.pieceValues.P + dP));
-    let newS = Math.max(1.0, Math.min(300, weights.pieceValues.S + dS));
+    // Apply updates with minimum piece floor of 5.0 (pieces never become 1-value throwaway tokens)
+    let newR = Math.max(5.0, Math.min(300, weights.pieceValues.R + dR));
+    let newP = Math.max(5.0, Math.min(300, weights.pieceValues.P + dP));
+    let newS = Math.max(5.0, Math.min(300, weights.pieceValues.S + dS));
 
     // Gentle mean-centering regularization to stabilize cyclic limit cycles (R > S > P > R)
     // Prevents runaways while fully preserving relative tactical advantages
     const meanVal = (newR + newP + newS) / 3;
     if (meanVal > 15) {
       const decay = 0.005; // 0.5% pull towards mean per game
-      newR = Math.max(1.0, newR - (newR - meanVal) * decay);
-      newP = Math.max(1.0, newP - (newP - meanVal) * decay);
-      newS = Math.max(1.0, newS - (newS - meanVal) * decay);
+      newR = Math.max(5.0, newR - (newR - meanVal) * decay);
+      newP = Math.max(5.0, newP - (newP - meanVal) * decay);
+      newS = Math.max(5.0, newS - (newS - meanVal) * decay);
     }
 
     weights.pieceValues.R = newR;
     weights.pieceValues.P = newP;
     weights.pieceValues.S = newS;
 
-    weights.goalDistanceWeight = Math.max(0, Math.min(100, weights.goalDistanceWeight + dGoal));
-    weights.threatBonus = Math.max(0, Math.min(50, weights.threatBonus + dThreat));
-    weights.vulnerabilityPenalty = Math.max(0, Math.min(50, weights.vulnerabilityPenalty + dVuln));
+    // Anchor goal distance weight with a minimum floor of 10.0 so the engine never unlearns touchdown
+    weights.goalDistanceWeight = Math.max(10.0, Math.min(100, weights.goalDistanceWeight + dGoal));
+    weights.threatBonus = Math.max(2.0, Math.min(50, weights.threatBonus + dThreat));
+    weights.vulnerabilityPenalty = Math.max(2.0, Math.min(50, weights.vulnerabilityPenalty + dVuln));
     weights.tempoBonus = Math.max(0, Math.min(20, weights.tempoBonus + dTempo));
 
 

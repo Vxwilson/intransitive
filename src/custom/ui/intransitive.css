@@ -1698,6 +1698,60 @@ body.theme-intransitive-warm {
   font-family: 'JetBrains Mono', monospace;
 }
 
+.intransitive-candidate-pv {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  font-size: 0.68rem;
+  color: #786f66;
+  font-family: 'JetBrains Mono', monospace;
+  padding-top: 0.15rem;
+}
+
+.intransitive-pv-label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #a8a095;
+  letter-spacing: 0.04em;
+  margin-right: 0.15rem;
+}
+
+.intransitive-pv-move {
+  display: inline-block;
+  background: #f5f2eb;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid #e5dfd5;
+  color: #443c34;
+  font-weight: 600;
+}
+
+.intransitive-header-save-group {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.intransitive-header-snapshot-input {
+  background: #ffffff;
+  border: 1px solid #dfd8cc;
+  border-radius: 6px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.74rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: #2b2520;
+  width: 175px;
+  transition: all 0.15s ease;
+}
+
+.intransitive-header-snapshot-input:focus {
+  outline: none;
+  border-color: #ea580c;
+  box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.15);
+}
+
 /* Human Play Controls Toolbar */
 .intransitive-human-bar {
   display: flex;

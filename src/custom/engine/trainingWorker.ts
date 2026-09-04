@@ -96,10 +96,18 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     case 'STEP_LIVE': {
       const game = new IntransitiveGame(req.currentFen);
       const searchDepth = req.config?.searchDepth ?? 2;
-      const epsilon = req.config?.epsilon ?? 0.02;
       const weightsToUse = req.customWeights ?? trainer.weights;
 
-      const { bestMove, score } = selectMove(game, weightsToUse, searchDepth, epsilon);
+      // AlphaZero dynamic live play: Use Softmax temperature (T = 15 cp) for opening plies (0..3)
+      // to ensure rich branching and avoid deterministic repetition across matches,
+      // then greedy argmax for tactically sound midgame/endgame conversion.
+      const { bestMove, score } = selectMove(game, weightsToUse, {
+        depth: searchDepth,
+        temperature: 15.0,
+        rootNoise: 0.0,
+        ply: game.halfmoveClock,
+        openingPlies: 4,
+      });
 
 
       if (!bestMove) {
@@ -155,6 +163,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       break;
     }
 
+    case 'SYNC_WEIGHTS':
     case 'SET_WEIGHTS': {
       currentWeights = req.weights;
       const prevConfig: Partial<TrainingConfig> = { ...trainer.learner.config };

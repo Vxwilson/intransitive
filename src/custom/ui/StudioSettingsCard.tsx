@@ -17,6 +17,7 @@ import {
   RotateCcw,
   Sparkles,
   Zap,
+  Trash2,
 } from 'lucide-react';
 import type { Checkpoint } from '../engine/types';
 
@@ -42,6 +43,8 @@ interface StudioSettingsCardProps {
   onExportJSON: () => void;
   onImportJSON: (json: string) => void;
   onResetSettings: () => void;
+  onDeleteCheckpoint?: (id: string) => void;
+  onClearAllCheckpoints?: () => void;
 }
 
 export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
@@ -66,6 +69,8 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
   onExportJSON,
   onImportJSON,
   onResetSettings,
+  onDeleteCheckpoint,
+  onClearAllCheckpoints,
 }) => {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -343,6 +348,85 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                   <input type="file" accept=".json" onChange={handleFileUpload} style={{ display: 'none' }} />
                 </label>
               </div>
+            </div>
+
+            {/* Custom User Models Management & Cleaner */}
+            <div style={{ paddingTop: '0.65rem', borderTop: '1px solid #eee8de', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#2b2520' }}>
+                    Saved Models ({checkpoints.filter((c) => !c.id.startsWith('preset-')).length}):
+                  </span>
+                  <p style={{ fontSize: '0.68rem', color: '#786f66', margin: 0 }}>
+                    Stored in browser local storage
+                  </p>
+                </div>
+                {checkpoints.some((c) => !c.id.startsWith('preset-')) && onClearAllCheckpoints && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Delete all custom user checkpoints? This cannot be undone.')) {
+                        onClearAllCheckpoints();
+                      }
+                    }}
+                    className="intransitive-mini-btn"
+                    style={{ color: '#b91c1c', borderColor: '#fca5a5', background: '#fef2f2', padding: '0.2rem 0.6rem', fontSize: '0.7rem' }}
+                    title="Delete all user checkpoints"
+                  >
+                    <Trash2 size={11} /> Clear All Models
+                  </button>
+                )}
+              </div>
+
+              {checkpoints.filter((c) => !c.id.startsWith('preset-')).length === 0 ? (
+                <div style={{ fontSize: '0.72rem', color: '#8c827a', fontStyle: 'italic', padding: '0.4rem 0.6rem', background: '#faf8f5', borderRadius: '6px' }}>
+                  No custom models saved yet. Built-in presets (Gen 0 and Heuristic Master) are permanently available.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', maxHeight: '180px', overflowY: 'auto', paddingRight: '0.2rem' }}>
+                  {checkpoints
+                    .filter((c) => !c.id.startsWith('preset-'))
+                    .map((cp) => (
+                      <div
+                        key={cp.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '0.35rem 0.6rem',
+                          background: '#faf8f5',
+                          borderRadius: '6px',
+                          border: '1px solid #eee8de',
+                          fontSize: '0.72rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', overflow: 'hidden' }}>
+                          <span style={{ fontWeight: 700, color: '#2b2520', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                            💾 {cp.name}
+                          </span>
+                          <span style={{ color: '#8c827a', fontSize: '0.68rem' }}>
+                            (Gen {cp.generation})
+                          </span>
+                        </div>
+                        {onDeleteCheckpoint && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Delete checkpoint "${cp.name}"?`)) {
+                                onDeleteCheckpoint(cp.id);
+                              }
+                            }}
+                            className="intransitive-icon-btn"
+                            style={{ color: '#b91c1c', width: '22px', height: '22px' }}
+                            title={`Delete ${cp.name}`}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

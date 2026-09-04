@@ -12,7 +12,7 @@ import type {
   TrainingStats,
   GenerationPoint,
 } from './types';
-import { evaluate, extractFeatures, createHeuristicWeights } from './evaluator';
+import { evaluate, extractFeatures, createHeuristicWeights, cloneWeights } from './evaluator';
 import { selectMove } from './search';
 import { TDLearner, type TrajectoryStep } from './tdLearner';
 
@@ -27,10 +27,12 @@ export class SelfPlayTrainer {
   public weights: EvaluationWeights;
   public stats: TrainingStats;
   public learner: TDLearner;
+  public leagueBuffer: EvaluationWeights[];
 
   constructor(weights: EvaluationWeights, config: Partial<TrainingConfig> = {}) {
     this.weights = weights;
     this.learner = new TDLearner(config);
+    this.leagueBuffer = [cloneWeights(weights)];
     this.stats = {
       generation: 0,
       gamesPlayed: 0,
@@ -59,24 +61,64 @@ export class SelfPlayTrainer {
 
   /**
    * Plays a single self-play game and performs TD update on the weights.
+   * Incorporates AlphaZero-style Softmax temperature + Dirichlet root noise,
+   * TD-Leaf lookahead targets, and Anti-Cycle Historical League opponent mixing.
    */
   public playSelfPlayGame(): GameRecord {
     const game = new IntransitiveGame();
     const trajectory: TrajectoryStep[] = [];
     const moves: Move[] = [];
 
-    const { searchDepth, epsilon, maxPliesPerGame } = this.learner.config;
+    const { searchDepth, maxPliesPerGame } = this.learner.config;
+
+    // League Opponent Mixing (Anti-Cycle Buffer):
+    // In cyclic games (R > S > P > R), naive self-play oscillates in limit cycles.
+    // We mix:
+    // - 65% Pure self-play against latest model (this.weights)
+    // - 20% Sampled historical past checkpoint from the league buffer
+    // - 15% Heuristic benchmark anchor (prevents tactical drift)
+    let opponentWeights = this.weights;
+    const rOpponent = Math.random();
+    if (rOpponent < 0.15) {
+      opponentWeights = createHeuristicWeights();
+    } else if (rOpponent < 0.35 && this.leagueBuffer.length > 0) {
+      const idx = Math.floor(Math.random() * this.leagueBuffer.length);
+      opponentWeights = this.leagueBuffer[idx];
+    }
 
     while (trajectory.length < maxPliesPerGame) {
       const status = game.isTerminal();
       if (status.isOver) break;
 
+      const currentPly = trajectory.length;
+      const isBlue = game.activePlayer === PLAYER_BLUE;
+      const currentWeights = isBlue ? this.weights : opponentWeights;
+
+      // Multi-stage AlphaZero exploration schedule:
+      // - Plies 0..4 (Opening): T = 24 cp, Dirichlet noise = 0.25 (escape certainty, branch opening tree)
+      // - Plies 5..8 (Midgame transition): T = 10 cp, Dirichlet noise = 0.08
+      // - Plies 9+ (Tactical conversion & endgame): T = 0 cp, Dirichlet noise = 0.0 (greedy argmax)
+      let temp = 0.0;
+      let noise = 0.0;
+      if (currentPly < 5) {
+        temp = 24.0;
+        noise = 0.25;
+      } else if (currentPly < 9) {
+        temp = 10.0;
+        noise = 0.08;
+      }
+
+      const { bestMove } = selectMove(game, currentWeights, {
+        depth: searchDepth,
+        temperature: temp,
+        rootNoise: noise,
+        ply: currentPly,
+      });
+      if (!bestMove) break;
+
       const features = extractFeatures(game);
       const evalScore = evaluate(game, this.weights);
       trajectory.push({ features, evalScore });
-
-      const { bestMove } = selectMove(game, this.weights, searchDepth, epsilon);
-      if (!bestMove) break;
 
       moves.push(bestMove);
       game.makeMove(bestMove);
@@ -174,6 +216,14 @@ export class SelfPlayTrainer {
       this.stats.history.push(point);
     }
 
+    // Save snapshot to rolling historical league buffer every 50 generations (up to 12 models)
+    if (this.stats.generation % 50 === 0) {
+      this.leagueBuffer.push(cloneWeights(this.weights));
+      if (this.leagueBuffer.length > 12) {
+        this.leagueBuffer.shift();
+      }
+    }
+
     return {
       winner: finalStatus.winner ?? 'draw',
       reason: finalStatus.reason ?? 'max-plies',
@@ -227,7 +277,14 @@ export class SelfPlayTrainer {
                         (game.activePlayer === PLAYER_RED && !aIsBlue);
 
         const currentWeights = isTurnA ? weightsA : weightsB;
-        const { bestMove } = selectMove(game, currentWeights, searchDepth, 0.0);
+        // AlphaZero Tournament schedule: T = 15 cp for first 4 plies (tactical opening branching), then T = 0 greedy
+        const { bestMove } = selectMove(game, currentWeights, {
+          depth: searchDepth,
+          temperature: 15.0,
+          rootNoise: 0.0,
+          ply: plies,
+          openingPlies: 4,
+        });
         if (!bestMove) break;
 
         // Evaluate move agreement against benchmark
@@ -248,7 +305,7 @@ export class SelfPlayTrainer {
         game.makeMove(bestMove);
         plies++;
 
-        if (onMove && i < 20) {
+        if (onMove && i < Math.min(numGames, 100)) {
           onMove({
             move: bestMove,
             san,

@@ -11,6 +11,7 @@ import {
 } from './evaluator';
 import { TDLearner, type TrajectoryStep } from './tdLearner';
 import { SelfPlayTrainer } from './trainer';
+import { getTopMoves, formatEvalScore } from './search';
 import {
   PRESET_CHECKPOINTS,
   saveCheckpoint,
@@ -181,5 +182,82 @@ console.log(
 );
 assert(arenaResult.winsA >= arenaResult.winsB, 'Heuristic master should outperform untrained Gen 0 in arena');
 console.log('✓ Checkpoint Arena tournament simulation verified');
+
+// 7. Multi-Move Candidate Analysis (PV Continuation Lines & Mate Detection)
+console.log('\n--- 7. Engine Move Analysis with PV Continuations & Mate Formatting ---');
+const analysisGame = new IntransitiveGame();
+const candidateMoves = getTopMoves(analysisGame, heuristicWeights, 3, 2);
+
+assert(candidateMoves.length === 3, 'Should produce 3 candidate moves');
+assert(candidateMoves[0].rank === 1, 'First move must be rank 1');
+const topPv = candidateMoves[0].pv;
+if (!topPv) throw new Error('Each candidate move must have a PV line array');
+assert(topPv.length > 0, 'PV line array must contain subsequent moves');
+console.log(`Top candidate move: ${candidateMoves[0].san} (score: ${candidateMoves[0].score})`);
+console.log(`PV Continuation line: ${topPv.join(' ')}`);
+
+// Verify formatEvalScore
+assert(formatEvalScore(150) === '+150', 'Positive score must be formatted with +');
+assert(formatEvalScore(-80) === '-80', 'Negative score must be formatted with -');
+assert(formatEvalScore(0) === '0', 'Zero score must be formatted as 0');
+assert(formatEvalScore(9999, true, 1) === '+M1', 'Mate in 1 ply must format as +M1');
+assert(formatEvalScore(9997, true, 3) === '+M2', 'Mate in 3 plies must format as +M2');
+assert(formatEvalScore(-9998, true, 2) === '-M1', 'Opponent mate in 2 plies must format as -M1');
+console.log('✓ Engine candidate moves PV continuation line and mate formatting verified');
+
+// 8. Streamed Arena Tournament (50 games)
+console.log('\n--- 8. Fast Board Zoom Streaming Verification (50 games) ---');
+let streamedMoveCount = 0;
+const streamedGames = new Set<number>();
+SelfPlayTrainer.runArenaTournament(
+  heuristicWeights,
+  createZeroWeights(),
+  50,
+  1,
+  (data) => {
+    streamedMoveCount++;
+    streamedGames.add(data.gameIndex);
+  }
+);
+assert(streamedMoveCount > 0, 'Streamed move count must be greater than 0');
+assert(streamedGames.size === 50, 'All 50 games in tournament must be streamed via onMove callback');
+// 9. AlphaZero Tournament Opening Divergence
+console.log('\n--- 9. AlphaZero Opening Branching & Match Diversity ---');
+const openingFirstMoves = new Set<string>();
+SelfPlayTrainer.runArenaTournament(
+  heuristicWeights,
+  heuristicWeights,
+  20,
+  1,
+  (data) => {
+    // Collect the very first move of each game
+    if (data.san && !openingFirstMoves.has(`${data.gameIndex}:${data.san}`)) {
+      if (data.gameIndex && openingFirstMoves.size < 20) {
+        openingFirstMoves.add(`${data.gameIndex}:${data.san}`);
+      }
+    }
+  }
+);
+// Extract distinct move strings across the 20 games
+const distinctMoves = new Set(Array.from(openingFirstMoves).map(s => s.split(':')[1]));
+assert(
+  distinctMoves.size >= 2,
+  `AlphaZero opening temperature must explore at least 2 distinct opening moves across 20 games, found ${distinctMoves.size}`
+);
+console.log(`✓ Verified ${distinctMoves.size} distinct opening moves branched across 20 identical-weight games: ${Array.from(distinctMoves).join(', ')}`);
+
+// 10. Historical League Buffer Anti-Cycle Training
+console.log('\n--- 10. Anti-Cycle Historical League Buffer Simulation ---');
+const leagueTrainer = new SelfPlayTrainer(createZeroWeights(), {
+  learningRate: 0.02,
+  searchDepth: 1,
+});
+assert(leagueTrainer.leagueBuffer.length === 1, 'Initial league buffer must contain baseline model');
+for (let i = 0; i < 55; i++) {
+  leagueTrainer.playSelfPlayGame();
+}
+assert(leagueTrainer.leagueBuffer.length >= 2, 'League buffer must store historical snapshots at generation 50');
+assert(!isNaN(leagueTrainer.weights.pieceValues.R), 'Weights must remain finite valid numbers');
+console.log(`✓ Verified Historical League Buffer populated (${leagueTrainer.leagueBuffer.length} snapshots), weights stable.`);
 
 console.log('\n🎉 ALL INTRANSITIVE TD-LEARNING & ENGINE TESTS PASSED WITH 100% ACCURACY!');

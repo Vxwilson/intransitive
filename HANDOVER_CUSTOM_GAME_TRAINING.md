@@ -78,9 +78,20 @@ src/custom/
 - **TD-Leaf($\lambda$)**:
   $$\delta_t = V(s_{t+1}) - V(s_t), \quad \delta_{T-1} = z - V(s_{T-1})$$
   $$E_t = \delta_t + \lambda \cdot E_{t+1}, \quad \Delta w_k = \frac{\alpha}{\sqrt{T}} \sum_{t=0}^{T-1} E_t \cdot f_k(s_t)$$
-- **Stabilizing Limit Cycles**:
-  - **Minimum Piece Floor ($\ge 1.0$)**: In analogy to chess pawns, prevents material value collapse during cyclic downturns.
-  - **Mean-Centering Regularization**: Keeps predator-prey dynamics stable and prevents weight divergence.
+- **AlphaZero Exploration & Move Sampling**:
+  - **Softmax Temperature Annealing**: Moves during opening plies are sampled with $P(m) \propto \exp((Q(m) - Q_{\max})/\tau)$:
+    - Plies 0–4 (Opening): $\tau = 24.0\text{ cp}, \epsilon = 0.25$ (forces exploration of alternative opening moves; escapes premature certainty and "tunnel vision").
+    - Plies 5–8 (Transition): $\tau = 10.0\text{ cp}, \epsilon = 0.08$ (focused exploration among top candidates).
+    - Plies 9+ (Endgame): $\tau = 0.0\text{ cp}$ (greedy argmax conversion to punish blunders and convert touchdowns).
+  - **Dirichlet Root Noise**: Sampled via Marsaglia-Tsang Gamma generator with $\boldsymbol{\eta} \sim \text{Dir}(0.3)$ blended at $25\%$ during root openings.
+- **Anti-Cycle Historical League Buffer**:
+  - In cyclic games where $R > S > P > R$, pure self-play ($W_t$ vs $W_t$) oscillates in limit cycles (Red Queen effect).
+  - A rolling buffer of deep-cloned weights is preserved every 50 generations (up to 12 models).
+  - Opponents are mixed probabilistically: **65% Self-Play**, **20% Historical League Checkpoint**, **15% Heuristic Benchmark Anchor**.
+- **Goal Anchor Floor & Parameter Safeguards**:
+  - **Goal Floor ($\ge 10.0$)**: Prevents catastrophic touchdown decay where drawn/counterattacked games previously drove $w_{\text{goal}} \to 0$.
+  - **Goal Gradient Normalization ($0.1\times$)**: Multi-piece distance sums are scaled to balance with single-piece material features.
+  - **Piece & Tactical Floors**: Minimum floor of $5.0$ on piece values and $2.0$ on threat/vulnerability penalties ensures pieces remain valuable tactical assets throughout thousands of self-play games.
 
 ---
 
@@ -119,6 +130,7 @@ The studio features 4 dedicated operational tabs:
 
 ### Tab 4: Settings (`settings`)
 - **Coupled Master Evaluation Model**: Model selection for **Board Evaluation** and **Human Play Move Analysis** is coupled into a single master dropdown (`evalModelId`).
+- **Model Cleaner & Checkpoint Manager**: Full list of user-saved checkpoints with creation timestamp and generation count, individual delete buttons, and a **"Clear All Models"** button that purges user checkpoints from `localStorage` without affecting built-in presets (`Gen 0` and `Heuristic Master`).
 - **Fast Tournament Zoom**: Global toggle for fast board zoom during arena simulations.
 - **Visual Arena Playback Speed**: Default delay (ms).
 - **Human Play Defaults**: Default player side (`blue` or `red`) and default AI opponent.

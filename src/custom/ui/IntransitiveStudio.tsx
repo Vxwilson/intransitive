@@ -10,13 +10,15 @@ import {
   RotateCcw,
   Undo2,
   ArrowUpDown,
+  BookmarkPlus,
+  Check,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import type { Move } from '../core/types';
 import { createZeroWeights, createHeuristicWeights, evaluate } from '../engine/evaluator';
-import { getTopMoves } from '../engine/search';
+import { getTopMoves, formatEvalScore } from '../engine/search';
 import type {
   EvaluationWeights,
   TrainingStats,
@@ -26,8 +28,13 @@ import type {
 import {
   getStoredCheckpoints,
   saveCheckpoint,
+  deleteCheckpoint,
+  clearAllUserCheckpoints,
   exportCheckpointsJSON,
   importCheckpointsJSON,
+  createInitialStats,
+  PRESET_CHECKPOINTS,
+  getDefaultCheckpointName,
 } from '../engine/checkpoint';
 import { IntransitiveBoard } from './IntransitiveBoard';
 import { LiveControls } from './LiveControls';
@@ -146,10 +153,34 @@ export const IntransitiveStudio: React.FC = () => {
     initialSettings.analysisMaxRows ?? 3
   );
 
-  // Tournament Live Board Zoom Queue
-  const zoomQueueRef = useRef<{ move: Move; san: string; fen: string; isOver: boolean }[]>([]);
+  // Turbo Trainer Baseline & Snapshot State
+  const [selectedBaselineId, setSelectedBaselineId] = useState<string>('preset-gen-0');
+  const [snapshotName, setSnapshotName] = useState<string>(() => getDefaultCheckpointName(stats.generation));
+  const [lastLoadedOrSavedGen, setLastLoadedOrSavedGen] = useState<number>(stats.generation);
+  const [isSnapshotSaved, setIsSnapshotSaved] = useState<boolean>(false);
+
+  // Tournament Live Board Zoom Queue & Refs
+  const zoomQueueRef = useRef<{ move: Move; san: string; fen: string; isOver: boolean; gameIndex?: number }[]>([]);
   const pendingTournamentResultRef = useRef<any>(null);
   const [isZoomingTournament, setIsZoomingTournament] = useState<boolean>(false);
+  const currentZoomGameRef = useRef<number>(1);
+
+  // Volatile state refs to avoid tearing down the Web Worker
+  const soundEnabledRef = useRef(soundEnabled);
+  const tournamentZoomEnabledRef = useRef(tournamentZoomEnabled);
+  const isZoomingTournamentRef = useRef(isZoomingTournament);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    tournamentZoomEnabledRef.current = tournamentZoomEnabled;
+  }, [tournamentZoomEnabled]);
+
+  useEffect(() => {
+    isZoomingTournamentRef.current = isZoomingTournament;
+  }, [isZoomingTournament]);
 
   // Worker reference
   const workerRef = useRef<Worker | null>(null);
@@ -221,7 +252,7 @@ export const IntransitiveStudio: React.FC = () => {
   // Candidate moves for Human Play engine analysis (coupled with activeEvalModel)
   const candidateMoves = useMemo(() => {
     if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return [];
-    return getTopMoves(game, activeEvalModel.weights, analysisMaxRows, 1);
+    return getTopMoves(game, activeEvalModel.weights, analysisMaxRows, 2);
   }, [activeTab, isAnalysisEnabled, game, activeEvalModel, analysisMaxRows]);
 
   // Persist settings on change
@@ -251,7 +282,7 @@ export const IntransitiveStudio: React.FC = () => {
     fighterBId,
   ]);
 
-  // Initialize Web Worker
+  // Initialize Web Worker once on mount
   useEffect(() => {
     const worker = new Worker(
       new URL('../engine/trainingWorker.ts', import.meta.url),
@@ -271,6 +302,8 @@ export const IntransitiveStudio: React.FC = () => {
           });
           setStats(data.stats);
           setWeights(data.weights);
+          setSnapshotName(getDefaultCheckpointName(data.stats.generation));
+          setSelectedBaselineId('current');
           break;
         }
 
@@ -279,7 +312,9 @@ export const IntransitiveStudio: React.FC = () => {
           setTurboProgress(null);
           setStats(data.stats);
           setWeights(data.weights);
-          if (soundEnabled) sounds.playVictory();
+          setSnapshotName(getDefaultCheckpointName(data.stats.generation));
+          setSelectedBaselineId('current');
+          if (soundEnabledRef.current) sounds.playVictory();
           break;
         }
 
@@ -294,7 +329,7 @@ export const IntransitiveStudio: React.FC = () => {
             nextGame.makeMove(data.move);
 
             // Audio cues
-            if (soundEnabled) {
+            if (soundEnabledRef.current) {
               if (data.move.captured) {
                 sounds.playCapture();
               } else {
@@ -311,7 +346,7 @@ export const IntransitiveStudio: React.FC = () => {
 
             if (data.isOver) {
               setIsPlayingLive(false);
-              if (soundEnabled) sounds.playVictory();
+              if (soundEnabledRef.current) sounds.playVictory();
             }
 
             return nextGame;
@@ -325,12 +360,12 @@ export const IntransitiveStudio: React.FC = () => {
         }
 
         case 'ARENA_RESULT': {
-          if (tournamentZoomEnabled && isZoomingTournament) {
+          if (tournamentZoomEnabledRef.current && isZoomingTournamentRef.current) {
             pendingTournamentResultRef.current = data;
           } else {
             setTournamentResult(data);
             setIsZoomingTournament(false);
-            if (soundEnabled) sounds.playVictory();
+            if (soundEnabledRef.current) sounds.playVictory();
           }
           break;
         }
@@ -346,36 +381,51 @@ export const IntransitiveStudio: React.FC = () => {
     return () => {
       worker.terminate();
     };
-  }, [soundEnabled, tournamentZoomEnabled, isZoomingTournament]);
+  }, []);
 
-  // Tournament Live Board Zoom ticker (5ms per move)
+  // Tournament Live Board Zoom ticker (6ms per tick with adaptive draining)
   useEffect(() => {
     if (!isZoomingTournament) return;
 
     const timer = setInterval(() => {
-      const next = zoomQueueRef.current.shift();
-      if (next) {
-        setGame(new IntransitiveGame(next.fen));
-        setLastMove(next.move);
+      const qLen = zoomQueueRef.current.length;
+      const batchSize = qLen > 300 ? 3 : qLen > 100 ? 2 : 1;
+
+      let lastNext: { move: Move; san: string; fen: string; isOver: boolean; gameIndex?: number } | null = null;
+      for (let b = 0; b < batchSize; b++) {
+        const item = zoomQueueRef.current.shift();
+        if (item) lastNext = item;
+        else break;
+      }
+
+      if (lastNext) {
+        if (lastNext.gameIndex && lastNext.gameIndex !== currentZoomGameRef.current) {
+          currentZoomGameRef.current = lastNext.gameIndex;
+          setMoveHistory([]);
+          setHistoryIndex(-1);
+        }
+
+        setGame(new IntransitiveGame(lastNext.fen));
+        setLastMove(lastNext.move);
         setMoveHistory((prev) => [
           ...prev,
-          { move: next.move, san: next.san, fen: next.fen },
+          { move: lastNext!.move, san: lastNext!.san, fen: lastNext!.fen },
         ]);
         setHistoryIndex((prev) => prev + 1);
-        if (soundEnabled) {
-          if (next.move.captured) sounds.playCapture();
-          else sounds.playMove();
+
+        if (soundEnabledRef.current && lastNext.isOver) {
+          sounds.playCapture();
         }
       } else if (pendingTournamentResultRef.current) {
         setTournamentResult(pendingTournamentResultRef.current);
         pendingTournamentResultRef.current = null;
         setIsZoomingTournament(false);
-        if (soundEnabled) sounds.playVictory();
+        if (soundEnabledRef.current) sounds.playVictory();
       }
-    }, 5);
+    }, 6);
 
     return () => clearInterval(timer);
-  }, [isZoomingTournament, soundEnabled]);
+  }, [isZoomingTournament]);
 
   // Visual Arena Live playback loop: alternates between Fighter A (Blue) and Fighter B (Red)
   useEffect(() => {
@@ -569,13 +619,84 @@ export const IntransitiveStudio: React.FC = () => {
       workerRef.current.postMessage({ type: 'RESET_TRAINING' });
     }
     handleResetGame();
+    setSelectedBaselineId('preset-gen-0');
+    setLastLoadedOrSavedGen(0);
+    setSnapshotName(getDefaultCheckpointName(0));
   }, [handleResetGame]);
+
+  // Baseline Loading & Top Bar Snapshot Handlers
+  const handleLoadBaseline = useCallback((id: string) => {
+    let newW: EvaluationWeights;
+    let newStats: TrainingStats;
+
+    if (id === 'preset-gen-0') {
+      newW = createZeroWeights();
+      newStats = createInitialStats(0);
+      setSelectedBaselineId('preset-gen-0');
+    } else if (id === 'preset-heuristic-master') {
+      newW = createHeuristicWeights();
+      const masterPreset = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-heuristic-master');
+      newStats = masterPreset?.stats ?? createInitialStats(1000);
+      setSelectedBaselineId('preset-heuristic-master');
+    } else if (id === 'current') {
+      newW = weights;
+      newStats = stats;
+      setSelectedBaselineId('current');
+    } else {
+      const cp = checkpoints.find((c) => c.id === id);
+      if (cp) {
+        newW = cp.weights;
+        newStats = cp.stats ?? createInitialStats(cp.generation);
+        setSelectedBaselineId(cp.id);
+      } else {
+        newW = weights;
+        newStats = stats;
+      }
+    }
+
+    setWeights(newW);
+    setStats(newStats);
+    setLastLoadedOrSavedGen(newStats.generation);
+    setSnapshotName(getDefaultCheckpointName(newStats.generation));
+
+    if (workerRef.current) {
+      workerRef.current.postMessage({
+        type: 'SET_WEIGHTS',
+        weights: newW,
+        stats: newStats,
+      });
+    }
+  }, [checkpoints, weights, stats]);
+
+  const handleSaveCurrentCheckpoint = useCallback((name: string) => {
+    const cp = saveCheckpoint(name, stats.generation, weights, stats);
+    setCheckpoints(getStoredCheckpoints());
+    return cp;
+  }, [stats, weights]);
+
+  const handleHeaderSaveSnapshot = useCallback(() => {
+    const finalName = snapshotName.trim() || getDefaultCheckpointName(stats.generation);
+    handleSaveCurrentCheckpoint(finalName);
+    setLastLoadedOrSavedGen(stats.generation);
+    setIsSnapshotSaved(true);
+    setTimeout(() => setIsSnapshotSaved(false), 2500);
+  }, [snapshotName, stats.generation, handleSaveCurrentCheckpoint]);
+
+  const isCustomInMemory = useMemo(() => {
+    if (selectedBaselineId === 'current') return true;
+    if (selectedBaselineId === 'preset-gen-0' && stats.generation === 0 && stats.gamesPlayed === 0) return false;
+    if (selectedBaselineId === 'preset-heuristic-master') return false;
+    const cp = checkpoints.find((c) => c.id === selectedBaselineId);
+    if (cp && cp.generation === stats.generation) return false;
+    return true;
+  }, [selectedBaselineId, stats, checkpoints]);
 
   // Arena Actions
   const handleRunTournament = useCallback((cpA: Checkpoint, cpB: Checkpoint, games: number) => {
     setTournamentResult(null);
     if (tournamentZoomEnabled) {
       handleResetGame();
+      currentZoomGameRef.current = 1;
       zoomQueueRef.current = [];
       pendingTournamentResultRef.current = null;
       setIsZoomingTournament(true);
@@ -590,12 +711,6 @@ export const IntransitiveStudio: React.FC = () => {
       });
     }
   }, [tournamentZoomEnabled, handleResetGame]);
-
-  const handleSaveCurrentCheckpoint = useCallback((name: string) => {
-    const cp = saveCheckpoint(name, stats.generation, weights, stats);
-    setCheckpoints(getStoredCheckpoints());
-    return cp;
-  }, [stats, weights]);
 
   const handleExportJSON = useCallback(() => {
     const json = exportCheckpointsJSON();
@@ -615,8 +730,35 @@ export const IntransitiveStudio: React.FC = () => {
     }
   }, []);
 
+  const handleDeleteCheckpoint = useCallback((id: string) => {
+    const ok = deleteCheckpoint(id);
+    if (ok) {
+      setCheckpoints(getStoredCheckpoints());
+      if (fighterAId === id) setFighterAId('preset-heuristic-master');
+      if (fighterBId === id) setFighterBId('preset-heuristic-master');
+      if (evalModelId === id) setEvalModelId('preset-heuristic-master');
+      if (selectedBaselineId === id) setSelectedBaselineId('preset-gen-0');
+    }
+  }, [fighterAId, fighterBId, evalModelId, selectedBaselineId]);
+
+  const handleClearAllCheckpoints = useCallback(() => {
+    const ok = clearAllUserCheckpoints();
+    if (ok) {
+      setCheckpoints(getStoredCheckpoints());
+      setFighterAId('preset-heuristic-master');
+      setFighterBId('preset-heuristic-master');
+      setEvalModelId('preset-heuristic-master');
+      setSelectedBaselineId('preset-gen-0');
+    }
+  }, []);
+
   const currentStatus = game.isTerminal();
-  const evalScore = evaluate(game, activeEvalModel.weights);
+  const evalScore = useMemo(() => {
+    if (candidateMoves.length > 0) {
+      return candidateMoves[0].score;
+    }
+    return evaluate(game, activeEvalModel.weights);
+  }, [candidateMoves, game, activeEvalModel]);
 
   const isHumanTurn =
     activeTab === 'play' &&
@@ -816,23 +958,15 @@ export const IntransitiveStudio: React.FC = () => {
             <div className="intransitive-header-context-row">
               <span className="intransitive-strip-label">Load Baseline:</span>
               <select
-                defaultValue="current"
+                value={selectedBaselineId}
                 onChange={(e) => {
                   const id = e.target.value;
-                  const newW = getWeightsById(id);
-                  setWeights(newW);
-                  if (workerRef.current) {
-                    workerRef.current.postMessage({
-                      type: 'SYNC_WEIGHTS',
-                      weights: newW,
-                    });
-                  }
+                  handleLoadBaseline(id);
                 }}
                 className="intransitive-dropdown mini"
               >
-                <option value="current">🤖 Current In-Memory Weights</option>
-                <option value="preset-heuristic-master">🏆 Heuristic Master</option>
-                <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Zero)</option>
+                <option value="preset-gen-0">👶 None / From Scratch (Tabula Rasa Gen 0)</option>
+                <option value="preset-heuristic-master">🏆 Heuristic Master (Benchmark)</option>
                 {checkpoints
                   .filter((c) => !c.id.startsWith('preset-'))
                   .map((c) => (
@@ -840,7 +974,42 @@ export const IntransitiveStudio: React.FC = () => {
                       💾 {c.name} (Gen {c.generation})
                     </option>
                   ))}
+                {isCustomInMemory && (
+                  <option value="current">🤖 Current In-Memory Weights (Gen {stats.generation})</option>
+                )}
               </select>
+
+              <div className="intransitive-header-save-group">
+                <input
+                  type="text"
+                  value={snapshotName}
+                  onChange={(e) => setSnapshotName(e.target.value)}
+                  placeholder="Gen X_MMDD_HHMMSS"
+                  className="intransitive-header-snapshot-input"
+                  title="Default checkpoint snapshot name. Edit as desired."
+                />
+                <button
+                  type="button"
+                  onClick={handleHeaderSaveSnapshot}
+                  disabled={isTurboTraining || stats.generation === lastLoadedOrSavedGen}
+                  className="intransitive-btn-secondary mini"
+                  title={
+                    stats.generation === lastLoadedOrSavedGen
+                      ? 'Baseline just loaded or snapshot already saved for this generation'
+                      : `Save Gen ${stats.generation} Snapshot`
+                  }
+                >
+                  {isSnapshotSaved ? (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', color: '#059669' }}>
+                      <Check size={12} /> Saved!
+                    </span>
+                  ) : (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <BookmarkPlus size={12} color="#d97706" /> Save Snapshot
+                    </span>
+                  )}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -869,6 +1038,8 @@ export const IntransitiveStudio: React.FC = () => {
           onToggleSound={() => setSoundEnabled(!soundEnabled)}
           onExportJSON={handleExportJSON}
           onImportJSON={handleImportJSON}
+          onDeleteCheckpoint={handleDeleteCheckpoint}
+          onClearAllCheckpoints={handleClearAllCheckpoints}
           onResetSettings={() => {
             localStorage.removeItem(SETTINGS_KEY);
             setEvalModelId('preset-heuristic-master');
@@ -892,13 +1063,6 @@ export const IntransitiveStudio: React.FC = () => {
             onStartTurbo={handleStartTurbo}
             onStopTurbo={handleStopTurbo}
             onResetTraining={handleResetTraining}
-            onSaveCheckpoint={handleSaveCurrentCheckpoint}
-            onWatchLive={() => {
-              setActiveTab('arena');
-              setFighterAId('current');
-              handleResetGame();
-              setIsPlayingLive(true);
-            }}
           />
 
           <InterpretabilityCard
@@ -939,10 +1103,20 @@ export const IntransitiveStudio: React.FC = () => {
                 <span style={{ color: '#8c827a' }}>Eval:</span>
                 <span
                   style={{
-                    color: evalScore > 50 ? '#2563eb' : evalScore < -50 ? '#dc2626' : '#4a4239',
+                    color:
+                      Math.abs(evalScore) >= 9900
+                        ? evalScore > 0
+                          ? '#059669'
+                          : '#dc2626'
+                        : evalScore > 50
+                        ? '#2563eb'
+                        : evalScore < -50
+                        ? '#dc2626'
+                        : '#4a4239',
+                    fontWeight: Math.abs(evalScore) >= 9900 ? 800 : 700,
                   }}
                 >
-                  {evalScore > 0 ? `+${evalScore}` : evalScore}
+                  {formatEvalScore(evalScore)}
                 </span>
                 <span style={{ fontSize: '0.65rem', color: '#8c827a', marginLeft: '0.2rem' }}>
                   ({activeEvalModel.displayName})

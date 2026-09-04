@@ -28,6 +28,20 @@ export function createInitialStats(generation: number = 0): TrainingStats {
   };
 }
 
+/**
+ * Generate default checkpoint name in 'Gen X_MMDD_HHMMSS' format
+ * where X is the number of games played or generation count.
+ */
+export function getDefaultCheckpointName(gamesPlayed: number): string {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, '0');
+  const dd = String(now.getDate()).padStart(2, '0');
+  const hh = String(now.getHours()).padStart(2, '0');
+  const min = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  return `Gen ${gamesPlayed}_${mm}${dd}_${hh}${min}${ss}`;
+}
+
 export const PRESET_CHECKPOINTS: Checkpoint[] = [
   {
     id: 'preset-gen-0',
@@ -65,6 +79,9 @@ class MemoryStorage {
   }
   setItem(key: string, value: string): void {
     this.data.set(key, value);
+  }
+  removeItem(key: string): void {
+    this.data.delete(key);
   }
 }
 
@@ -133,6 +150,17 @@ export function deleteCheckpoint(id: string): boolean {
     return true;
   } catch (err) {
     console.error('Failed to delete checkpoint:', err);
+    return false;
+  }
+}
+
+export function clearAllUserCheckpoints(): boolean {
+  const storage = getStorage();
+  try {
+    storage.removeItem(STORAGE_KEY);
+    return true;
+  } catch (err) {
+    console.error('Failed to clear user checkpoints:', err);
     return false;
   }
 }

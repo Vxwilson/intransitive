@@ -9,13 +9,11 @@ import {
   Cpu,
   Rocket,
   Activity,
-  BookmarkPlus,
-  Check,
-  Eye,
   BarChart3,
   Crosshair,
   ShieldAlert,
   Sliders,
+  Sparkles,
 } from 'lucide-react';
 import type { TrainingStats } from '../engine/types';
 
@@ -26,22 +24,6 @@ interface TurboTrainerCardProps {
   onStartTurbo: (games: number) => void;
   onStopTurbo: () => void;
   onResetTraining: () => void;
-  onSaveCheckpoint: (name: string) => void;
-  onWatchLive: () => void;
-}
-
-/**
- * Generate default checkpoint name in 'Gen X_MMDD_HHMMSS' format
- * where X is the number of games played.
- */
-function getDefaultCheckpointName(gamesPlayed: number): string {
-  const now = new Date();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  const hh = String(now.getHours()).padStart(2, '0');
-  const min = String(now.getMinutes()).padStart(2, '0');
-  const ss = String(now.getSeconds()).padStart(2, '0');
-  return `Gen ${gamesPlayed}_${mm}${dd}_${hh}${min}${ss}`;
 }
 
 export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
@@ -51,12 +33,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
   onStartTurbo,
   onStopTurbo,
   onResetTraining,
-  onSaveCheckpoint,
-  onWatchLive,
 }) => {
-  const [isSaving, setIsSaving] = useState<boolean>(false);
-  const [customName, setCustomName] = useState<string>('');
-  const [savedSuccess, setSavedSuccess] = useState<boolean>(false);
   const [customAmount, setCustomAmount] = useState<number>(300);
 
   const percent = progress && progress.total > 0
@@ -66,21 +43,6 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
   const totalDecisive = stats.blueWins + stats.redWins;
   const bluePercent = totalDecisive > 0 ? Math.round((stats.blueWins / totalDecisive) * 100) : 50;
   const redPercent = 100 - bluePercent;
-
-  const handleOpenSave = () => {
-    const defaultName = getDefaultCheckpointName(stats.gamesPlayed);
-    setCustomName(defaultName);
-    setIsSaving(true);
-  };
-
-  const handleSave = () => {
-    const name = customName.trim() || getDefaultCheckpointName(stats.gamesPlayed);
-    onSaveCheckpoint(name);
-    setCustomName('');
-    setIsSaving(false);
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 2500);
-  };
 
   const handleStartCustom = () => {
     const games = Math.max(1, Math.min(50000, Number(customAmount) || 100));
@@ -221,6 +183,65 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
         </div>
       )}
 
+      {/* AlphaZero Exploration & Anti-Cycle Safeguards Strip */}
+      <div
+        style={{
+          marginTop: '0.65rem',
+          padding: '0.55rem 0.75rem',
+          background: '#fcfaf7',
+          border: '1px solid #ebd9c8',
+          borderRadius: '8px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.35rem',
+          fontSize: '0.74rem',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700, color: '#43281c' }}>
+            <Sparkles size={14} color="#d97706" />
+            <span>AlphaZero Exploration Engine & Anti-Cycle Safeguards</span>
+          </div>
+          <span
+            style={{
+              fontSize: '0.68rem',
+              color: '#059669',
+              background: '#ecfdf5',
+              padding: '0.1rem 0.45rem',
+              borderRadius: '4px',
+              border: '1px solid #a7f3d0',
+              fontWeight: 600,
+            }}
+          >
+            Active
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+            gap: '0.35rem',
+            color: '#6b635b',
+            fontSize: '0.71rem',
+            marginTop: '0.1rem',
+          }}
+        >
+          <div>
+            <strong style={{ color: '#292524' }}>Dirichlet Noise:</strong> α=0.30, ε=0.25 (Plies 0–4)
+          </div>
+          <div>
+            <strong style={{ color: '#292524' }}>Softmax Temp:</strong> τ=24 cp → 10 cp → 0 (Greedy)
+          </div>
+          <div>
+            <strong style={{ color: '#292524' }}>Opponent Mix:</strong> 65% Self / 20% League / 15% Anchor
+          </div>
+          <div>
+            <strong style={{ color: '#292524' }}>TD Signal:</strong> Backward eligibility TD(λ=0.7)
+          </div>
+        </div>
+      </div>
+
       {/* Rich Statistical Deep-Dive Section */}
       <div className="intransitive-stats-deep-section">
         <div className="intransitive-stats-deep-header">
@@ -297,65 +318,6 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
           </div>
         </div>
       </div>
-
-      {/* Post-Training Actions: Save Snapshot & Watch Live */}
-      {!isTraining && stats.generation > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem', paddingTop: '0.6rem', borderTop: '1px solid #f0ebe1' }}>
-          {!isSaving ? (
-            <button
-              type="button"
-              onClick={handleOpenSave}
-              className="intransitive-btn-secondary"
-            >
-              {savedSuccess ? (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: '#059669' }}>
-                  <Check size={14} /> Snapshot Saved!
-                </span>
-              ) : (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <BookmarkPlus size={14} color="#d97706" /> Save Gen {stats.generation} Snapshot
-                </span>
-              )}
-            </button>
-          ) : (
-            <div className="intransitive-save-checkpoint-row" style={{ gridColumn: 'span 2' }}>
-              <input
-                type="text"
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-                placeholder="Gen X_MMDD_HHMMSS"
-                className="intransitive-input-text"
-                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.8rem' }}
-              />
-              <button
-                type="button"
-                onClick={handleSave}
-                className="intransitive-btn-primary"
-                style={{ padding: '0.45rem 0.85rem' }}
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsSaving(false)}
-                className="intransitive-btn-text"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-
-          {!isSaving && (
-            <button
-              type="button"
-              onClick={onWatchLive}
-              className="intransitive-btn-primary"
-            >
-              <Eye size={14} /> Watch Gen {stats.generation} in Visual Arena
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 };

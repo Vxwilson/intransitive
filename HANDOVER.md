@@ -23,8 +23,8 @@ The long-term goal of **Chessesque** is to build a high-performance, trainable 2
 ### Phased Roadmap:
 - [x] **Phase 1: 100% Complete Rule Engine & Luxury Interactive Studio** (Completed & Verified)
 - [x] **Phase 2: Classical Search Engine & Live Game Analysis** (Completed & Verified)
-- [ ] **Phase 3: Trainable Evaluation Architecture (NNUE & PyTorch Pipeline)** (Current Target)
-- [ ] **Phase 4: Generalized 2-Player & Custom Game Framework**
+- [x] **Phase 3: Custom Intransitive 9x9 Cyclic RPS Game & Tabula Rasa Studio** (Completed & Verified — see [HANDOVER_CUSTOM_GAME_TRAINING.md](file:///Volumes/SN770%20BLACK/Documents/Coding/antigravity/chessesque/HANDOVER_CUSTOM_GAME_TRAINING.md))
+- [ ] **Phase 4: Generalized 2-Player & NNUE PyTorch Pipeline**
 
 ---
 

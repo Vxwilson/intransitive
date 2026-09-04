@@ -7,6 +7,7 @@ import React from 'react';
 import { BrainCircuit, Eye, EyeOff, Sparkles, ChevronRight } from 'lucide-react';
 import type { RankedMove } from '../engine/types';
 import type { Move } from '../core/types';
+import { formatEvalScore } from '../engine/search';
 
 interface HumanAnalysisPanelProps {
   isEnabled: boolean;
@@ -129,6 +130,7 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
             ) : (
               candidateMoves.slice(0, maxRows).map((cand) => {
                 const style = RANK_BADGE_COLORS[cand.rank] || RANK_BADGE_COLORS[5];
+                const scoreDisplay = formatEvalScore(cand.score, cand.isMate, cand.mateInPlies);
                 return (
                   <button
                     key={`${cand.move.from}-${cand.move.to}-${cand.rank}`}
@@ -138,35 +140,56 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
                     className="intransitive-candidate-row"
                     title={isHumanTurn ? `Click to play ${cand.san}` : cand.san}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span
-                        className="intransitive-rank-badge"
-                        style={{
-                          background: style.bg,
-                          color: style.text,
-                          borderColor: style.border,
-                        }}
-                      >
-                        #{cand.rank}
-                      </span>
-                      <span className="intransitive-candidate-san">
-                        {cand.san}
-                      </span>
-                      {cand.threat && (
-                        <span className="intransitive-candidate-tag">
-                          {cand.threat}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1, minWidth: 0, textAlign: 'left' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <span
+                          className="intransitive-rank-badge"
+                          style={{
+                            background: style.bg,
+                            color: style.text,
+                            borderColor: style.border,
+                          }}
+                        >
+                          #{cand.rank}
                         </span>
+                        <span className="intransitive-candidate-san">
+                          {cand.san}
+                        </span>
+                        {cand.threat && (
+                          <span className="intransitive-candidate-tag">
+                            {cand.threat}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Continuation PV line up to 5 subsequent moves */}
+                      {cand.pv && cand.pv.length > 0 && (
+                        <div className="intransitive-candidate-pv" title={`Continuation: ${cand.pv.join(' ')}`}>
+                          <span className="intransitive-pv-label">Line:</span>
+                          {cand.pv.map((m, idx) => (
+                            <span key={idx} className="intransitive-pv-move">
+                              {m}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginLeft: '0.5rem' }}>
                       <span
                         className="intransitive-candidate-score"
                         style={{
-                          color: cand.score > 50 ? '#059669' : cand.score < -50 ? '#dc2626' : '#6b635b',
+                          color: cand.isMate
+                            ? (cand.score > 0 ? '#059669' : '#dc2626')
+                            : cand.score > 50
+                            ? '#059669'
+                            : cand.score < -50
+                            ? '#dc2626'
+                            : '#6b635b',
+                          fontWeight: cand.isMate ? 800 : 700,
                         }}
                       >
-                        {cand.score > 0 ? `+${cand.score}` : cand.score}
+                        {scoreDisplay}
                       </span>
                       {isHumanTurn && <ChevronRight size={14} color="#a8a095" />}
                     </div>

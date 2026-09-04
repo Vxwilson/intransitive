@@ -61,6 +61,9 @@ export interface RankedMove {
   score: number;
   san: string;
   threat?: string;
+  pv?: string[];
+  isMate?: boolean;
+  mateInPlies?: number;
 }
 
 export interface Checkpoint {
@@ -95,6 +98,7 @@ export type WorkerRequest =
   | { type: 'STEP_LIVE'; currentFen?: string; config?: Partial<TrainingConfig>; customWeights?: EvaluationWeights }
   | { type: 'ARENA_RUN'; checkpointA: Checkpoint; checkpointB: Checkpoint; numGames: number; streamMoves?: boolean }
   | { type: 'SET_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
+  | { type: 'SYNC_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
   | { type: 'RESET_TRAINING' };
 
 export type WorkerResponse =

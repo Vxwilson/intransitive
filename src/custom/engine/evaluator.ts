@@ -46,6 +46,24 @@ export function createZeroWeights(): EvaluationWeights {
 }
 
 /**
+ * Creates an independent deep clone of evaluation weights.
+ */
+export function cloneWeights(w: EvaluationWeights): EvaluationWeights {
+  return {
+    pieceValues: { ...w.pieceValues },
+    goalDistanceWeight: w.goalDistanceWeight,
+    threatBonus: w.threatBonus,
+    vulnerabilityPenalty: w.vulnerabilityPenalty,
+    tempoBonus: w.tempoBonus,
+    pst: {
+      R: [...w.pst.R],
+      P: [...w.pst.P],
+      S: [...w.pst.S],
+    },
+  };
+}
+
+/**
  * Creates heuristic baseline weights for benchmarks and arena play.
  */
 export function createHeuristicWeights(): EvaluationWeights {
