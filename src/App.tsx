@@ -17,6 +17,7 @@ import { DIFFICULTY_PRESETS, loadSavedSettings, saveUserSettings } from './engin
 import { engineClient } from './engine/engineClient';
 import type { SearchUpdate } from './engine/search';
 import { ShieldCheck, Cpu } from 'lucide-react';
+import { IntransitiveStudio } from './custom/ui/IntransitiveStudio';
 import './styles/index.css';
 
 export function App() {
@@ -24,6 +25,9 @@ export function App() {
   const [chess] = useState<Chess>(() => new Chess());
   const [, setTick] = useState<number>(0);
   const rerender = useCallback(() => setTick((t) => t + 1), []);
+
+  // Active Game Mode: 'chess' (8x8 Standard) vs 'intransitive' (9x9 RPS RL Studio)
+  const [activeGameModule, setActiveGameModule] = useState<'chess' | 'intransitive'>('intransitive');
 
   // Saved user settings from localStorage
   const savedSettings = useMemo(() => loadSavedSettings(), []);
@@ -83,6 +87,18 @@ export function App() {
   useEffect(() => {
     sounds.enabled = soundEnabled;
   }, [soundEnabled]);
+
+  // Sync edge-to-edge warm ivory theme on body and html
+  useEffect(() => {
+    const isWarm = activeGameModule === 'intransitive';
+    document.body.classList.toggle('theme-intransitive-warm', isWarm);
+    document.documentElement.classList.toggle('theme-intransitive-warm', isWarm);
+    return () => {
+      document.body.classList.remove('theme-intransitive-warm');
+      document.documentElement.classList.remove('theme-intransitive-warm');
+    };
+  }, [activeGameModule]);
+
 
   // Automatically persist user settings to localStorage whenever changed
   useEffect(() => {
@@ -454,7 +470,7 @@ export function App() {
     : null;
 
   return (
-    <div className="app-root">
+    <div className={`app-root ${activeGameModule === 'intransitive' ? 'theme-intransitive-warm' : ''}`}>
       {/* Header */}
       <header className="app-header">
         <div className="brand-group">
@@ -467,41 +483,70 @@ export function App() {
           <span className="brand-phase-tag">Phase 2: Search Engine & AI</span>
         </div>
 
-        <div className="header-status">
-          <div className="turn-pill">
-            <span
-              className={`turn-dot ${
-                activeBoard.activeColor === WHITE ? 'turn-dot-white' : 'turn-dot-black'
-              }`}
-            />
-            <span>
-              {isComputerTurn
-                ? 'Computer Thinking...'
-                : activeBoard.activeColor === WHITE
-                ? 'White to Move'
-                : 'Black to Move'}
-            </span>
-          </div>
-
+        {/* Top Header Game Mode Switcher */}
+        <div className="top-mode-switcher">
           <button
-            className="control-btn btn-highlight"
-            onClick={() => setIsPerftOpen(true)}
-            style={{ padding: '0.35rem 0.75rem' }}
+            type="button"
+            onClick={() => setActiveGameModule('intransitive')}
+            className={`top-mode-btn ${
+              activeGameModule === 'intransitive' ? 'active-intransitive top-mode-btn-intransitive' : ''
+            }`}
           >
-            <ShieldCheck size={16} />
-            <span>Verify Rules (Perft)</span>
+            <span>⚔️ Intransitive (9x9 Studio)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveGameModule('chess')}
+            className={`top-mode-btn ${
+              activeGameModule === 'chess' ? 'active-chess top-mode-btn-chess' : 'top-mode-btn-chess'
+            }`}
+          >
+            <span>♞ Standard Chess (8x8)</span>
           </button>
         </div>
+
+
+        {activeGameModule === 'chess' && (
+          <div className="header-status">
+            <div className="turn-pill">
+              <span
+                className={`turn-dot ${
+                  activeBoard.activeColor === WHITE ? 'turn-dot-white' : 'turn-dot-black'
+                }`}
+              />
+              <span>
+                {isComputerTurn
+                  ? 'Computer Thinking...'
+                  : activeBoard.activeColor === WHITE
+                  ? 'White to Move'
+                  : 'Black to Move'}
+              </span>
+            </div>
+
+            <button
+              className="control-btn btn-highlight"
+              onClick={() => setIsPerftOpen(true)}
+              style={{ padding: '0.35rem 0.75rem' }}
+            >
+              <ShieldCheck size={16} />
+              <span>Verify Rules (Perft)</span>
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Main Studio Arena */}
       <main className="app-container">
-        {/* Status banner if checkmate or draw */}
-        <GameStatusBanner
-          status={currentStatus}
-          activeColor={chess.activeColor}
-          onNewGame={handleNewGame}
-        />
+        {activeGameModule === 'intransitive' ? (
+          <IntransitiveStudio />
+        ) : (
+          <>
+            {/* Status banner if checkmate or draw */}
+            <GameStatusBanner
+              status={currentStatus}
+              activeColor={chess.activeColor}
+              onNewGame={handleNewGame}
+            />
 
         <div className="studio-workspace">
           {/* Board & Live Eval Bar */}
@@ -585,6 +630,8 @@ export function App() {
             />
           </aside>
         </div>
+          </>
+        )}
       </main>
 
       {/* Modals */}
