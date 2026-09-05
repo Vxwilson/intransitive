@@ -1734,68 +1734,7 @@ export const IntransitiveStudio: React.FC = () => {
               </div>
             )}
 
-            {/* Win Condition Callout Modal if Game Ends */}
-            {finalGameStatus.isOver && (
-              <div className="intransitive-victory-banner">
-                <div className="intransitive-victory-content">
-                  <Trophy size={20} color="#ea580c" />
-                  <div>
-                    <h4 className="intransitive-victory-title">
-                      {finalGameStatus.winner === 'draw'
-                        ? 'Game Concluded in a Draw'
-                        : `${finalGameStatus.winner === PLAYER_BLUE ? 'Blue' : 'Red'} Victory!`}
-                    </h4>
-                    <p className="intransitive-victory-sub" style={{ textTransform: 'capitalize' }}>
-                      Condition: {finalGameStatus.reason}
-                      {historyIndex >= 0 && historyIndex < moveHistory.length - 1 && (
-                        <span style={{ marginLeft: '8px', color: '#c2410c', fontWeight: 600 }}>
-                          • Reviewing Ply {historyIndex + 1} of {moveHistory.length}
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  {historyIndex >= 0 && historyIndex < moveHistory.length - 1 && (
-                    <button
-                      type="button"
-                      onClick={() => handleSelectHistoryIndex(moveHistory.length - 1)}
-                      className="intransitive-btn-secondary"
-                      style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                      title="Jump to final position"
-                    >
-                      End Position
-                    </button>
-                  )}
-                  {gameAccuracyAnalysis && (
-                    <button
-                      type="button"
-                      onClick={() => setShowAccuracyView((prev) => !prev)}
-                      className="intransitive-btn-secondary"
-                      style={{
-                        padding: '0.45rem 0.8rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.35rem',
-                        fontSize: '0.75rem',
-                      }}
-                      title="Toggle post-game accuracy and evaluation analysis"
-                    >
-                      <Activity size={13} color="#ea580c" />
-                      {showAccuracyView ? 'Show Moves' : 'Show Accuracy'}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleResetGame}
-                    className="intransitive-btn-primary"
-                    style={{ padding: '0.45rem 0.9rem' }}
-                  >
-                    Play Again
-                  </button>
-                </div>
-              </div>
-            )}
+
           </div>
 
           {/* Right Column: Cards according to Tab Mode */}
