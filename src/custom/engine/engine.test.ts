@@ -15,6 +15,7 @@ import { getTopMoves, formatEvalScore, runIterativeDeepeningAnalysis } from './s
 import {
   PRESET_CHECKPOINTS,
   saveCheckpoint,
+  renameCheckpoint,
   getStoredCheckpoints,
   exportCheckpointsJSON,
   importCheckpointsJSON,
@@ -35,6 +36,7 @@ assert(zeroWeights.pieceValues.R === 0, 'Initial Rock weight must be 0.0');
 assert(zeroWeights.pieceValues.P === 0, 'Initial Paper weight must be 0.0');
 assert(zeroWeights.pieceValues.S === 0, 'Initial Scissors weight must be 0.0');
 assert(zeroWeights.goalDistanceWeight === 0, 'Initial goal proximity weight must be 0.0');
+assert(zeroWeights.runnerWeight === 0, 'Initial runner weight must be 0.0');
 assert(zeroWeights.threatBonus === 0, 'Initial threat bonus must be 0.0');
 assert(zeroWeights.vulnerabilityPenalty === 0, 'Initial vulnerability penalty must be 0.0');
 assert(zeroWeights.pst.R.every((v) => v === 0), 'Initial PST R must be 0');
@@ -49,6 +51,7 @@ assert(features.materialR === 0, 'Initial material R delta must be 0');
 assert(features.materialP === 0, 'Initial material P delta must be 0');
 assert(features.materialS === 0, 'Initial material S delta must be 0');
 assert(features.goalDistanceAdvantage === 0, 'Initial goal distance advantage must be 0 due to rotational symmetry');
+assert(features.runnerAdvantage === 0, 'Initial runner advantage must be 0 due to rotational symmetry');
 assert(features.threatAdvantage === 0, 'Initial threat advantage must be 0');
 assert(features.vulnerabilityAdvantage === 0, 'Initial vulnerability advantage must be 0');
 
@@ -74,6 +77,7 @@ const trajectory: TrajectoryStep[] = [
       materialP: 0,
       materialS: 0,
       goalDistanceAdvantage: 1,
+      runnerAdvantage: 1,
       threatAdvantage: 0,
       vulnerabilityAdvantage: 0,
       tempoAdvantage: 1,
@@ -91,6 +95,7 @@ const trajectory: TrajectoryStep[] = [
       materialP: 1, // Blue captured a Paper
       materialS: 0,
       goalDistanceAdvantage: 3,
+      runnerAdvantage: 6,
       threatAdvantage: 1,
       vulnerabilityAdvantage: 0,
       tempoAdvantage: 1,
@@ -109,9 +114,10 @@ learner.updateWeights(weights, trajectory, 1000);
 
 assert(weights.pieceValues.P > 0, `Paper value should increase after winning capture, got ${weights.pieceValues.P}`);
 assert(weights.goalDistanceWeight > 0, `Goal proximity weight should increase, got ${weights.goalDistanceWeight}`);
+assert((weights.runnerWeight ?? 0) > 0, `Runner weight should increase, got ${weights.runnerWeight}`);
 assert(weights.threatBonus > 0, `Threat bonus should increase, got ${weights.threatBonus}`);
 console.log(
-  `✓ TD updates verified: Paper=${weights.pieceValues.P.toFixed(2)}, GoalDist=${weights.goalDistanceWeight.toFixed(2)}, Threat=${weights.threatBonus.toFixed(2)}`
+  `✓ TD updates verified: Paper=${weights.pieceValues.P.toFixed(2)}, GoalDist=${weights.goalDistanceWeight.toFixed(2)}, Runner=${(weights.runnerWeight ?? 0).toFixed(2)}, Threat=${weights.threatBonus.toFixed(2)}`
 );
 
 // 4. Batch Self-Play Execution
@@ -157,15 +163,19 @@ assert(gen0 !== undefined, 'Gen 0 preset must exist');
 const saved = saveCheckpoint('Test Run Snapshot', 50, trainer.weights, trainer.stats);
 assert(saved.name === 'Test Run Snapshot', 'Checkpoint name must match');
 
+const renameOk = renameCheckpoint(saved.id, 'Renamed Master Model');
+assert(renameOk === true, 'Renaming custom checkpoint must succeed');
+assert(renameCheckpoint('preset-gen-0', 'Illegal Name') === false, 'Cannot rename built-in preset');
+
 const allStored = getStoredCheckpoints();
-assert(allStored.some((c) => c.name === 'Test Run Snapshot'), 'Saved checkpoint must be in list');
+assert(allStored.some((c) => c.id === saved.id && c.name === 'Renamed Master Model'), 'Renamed checkpoint must persist in storage');
 
 const exported = exportCheckpointsJSON();
-assert(exported.includes('Test Run Snapshot'), 'Exported JSON must contain saved checkpoint');
+assert(exported.includes('Renamed Master Model'), 'Exported JSON must contain renamed checkpoint');
 
 const imported = importCheckpointsJSON(exported);
 assert(imported === true, 'JSON import must succeed');
-console.log('✓ Checkpoint saving, loading, and JSON export/import verified');
+console.log('✓ Checkpoint saving, renaming, loading, and JSON export/import verified');
 
 // 6. Arena Head-to-Head Tournament
 console.log('\n--- 6. Head-to-Head Checkpoint Arena Exhibition ---');
@@ -295,6 +305,40 @@ const formattedScore = formatEvalScore(bestCand.score, bestCand.isMate, bestCand
 assert(formattedScore === '+M2' || formattedScore === '+M1', `Score must format as forced mate (+M2 or +M1), got ${formattedScore}`);
 assert(analysis.nodes > 0, 'Analysis must report non-zero searched nodes');
 assert(analysis.nps > 0, 'Analysis must report non-zero speed NPS');
-console.log(`✓ Iterative Deepening solved forced touchdown: ${bestCand.san} (${formattedScore}, ${bestCand.threat}) in ${analysis.nodes} nodes at ${analysis.nps} NPS (${analysis.timeMs}ms)`);
+// 12. Tactical Awareness & Unstoppable Runner Regression Test (Image 2 Position)
+console.log('\n--- 12. Tactical Awareness & Unstoppable Runner Regression (Image 2 Position) ---');
+// Position from user playtest: Blue has Paper on g7 (2 steps from i9, no red scissors can intercept)
+const image2Game = new IntransitiveGame('4S4/1r7/s1s3P2/4R1p2/1R4rp1/9/3P5/3p5/4P4 b 17 9');
+const image2Weights = createHeuristicWeights();
+
+// Depth 1 check: Evaluator must immediately prefer Pg7-h8
+const d1Image2Moves = getTopMoves(image2Game, image2Weights, 3, 1);
+assert(d1Image2Moves.length > 0, 'Must have legal moves at Depth 1');
+assert(d1Image2Moves[0].san === 'Pg7-h8', `Depth 1 must choose unstoppable runner Pg7-h8 as #1, got ${d1Image2Moves[0].san}`);
+assert(d1Image2Moves[0].score > 200, `Depth 1 score for Pg7-h8 must reflect decisive runner threat (> 200), got ${d1Image2Moves[0].score}`);
+
+// Depth 2 check: Horizon protection must keep Pg7-h8 as #1 (avoiding the -276 counter-threat trap)
+const d2Image2Moves = getTopMoves(image2Game, image2Weights, 3, 2);
+assert(d2Image2Moves[0].san === 'Pg7-h8', `Depth 2 must choose Pg7-h8 as #1 without falling into horizon trap, got ${d2Image2Moves[0].san}`);
+assert(d2Image2Moves[0].score > 50, `Depth 2 score for Pg7-h8 must remain decisive (> 50), got ${d2Image2Moves[0].score}`);
+
+// Depth 3 check: Must find forced win (+M2 / +9997)
+const d3Image2Moves = getTopMoves(image2Game, image2Weights, 3, 3);
+assert(d3Image2Moves[0].san === 'Pg7-h8', `Depth 3 must choose Pg7-h8 as #1, got ${d3Image2Moves[0].san}`);
+assert(d3Image2Moves[0].isMate === true, `Depth 3 must detect forced win for Pg7-h8`);
+console.log(`✓ Image 2 regression verified: Pg7-h8 selected at D1 (${d1Image2Moves[0].score} cp), D2 (${d2Image2Moves[0].score} cp), and D3 (${d3Image2Moves[0].score} cp, forced win!)`);
+
+// 12. Asymmetric Search Depth Tournament Verification
+console.log('\n--- 12. Independent Dual Fighter Search Depth Tournament ---');
+const asymmResult = SelfPlayTrainer.runArenaTournament(
+  heuristicWeights, // Fighter A: Depth 2
+  heuristicWeights, // Fighter B: Depth 1
+  10,
+  2, // searchDepthA
+  1  // searchDepthB
+);
+assert(asymmResult.gamesPlayed === 10, 'Must complete 10 games');
+assert(asymmResult.winsA + asymmResult.winsB + asymmResult.draws === 10, 'Wins + draws must equal total games');
+console.log(`✓ Asymmetric Depth Tournament verified (D2 vs D1): D2 wins ${asymmResult.winsA}, D1 wins ${asymmResult.winsB}, draws ${asymmResult.draws}`);
 
 console.log('\n🎉 ALL INTRANSITIVE TD-LEARNING & ENGINE TESTS PASSED WITH 100% ACCURACY!');

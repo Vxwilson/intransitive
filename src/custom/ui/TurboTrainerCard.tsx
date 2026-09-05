@@ -160,7 +160,9 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
             <span style={{ fontSize: '0.69rem', color: '#786f66', marginLeft: '0.45rem' }}>
               {trainingSearchDepth === 1
                 ? 'Ultra-Turbo (~25k plies/s - rapid exploration)'
-                : 'Tactical Lookahead (~1.5k plies/s - blunder-free master play)'}
+                : trainingSearchDepth === 2
+                ? 'Tactical Lookahead (~1.5k plies/s - blunder-free master play)'
+                : 'Deep Lookahead (~300 plies/s - multi-move forced conversions)'}
             </span>
           </div>
 
@@ -168,6 +170,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
             {[
               { d: 1, label: 'Depth 1 (Turbo)' },
               { d: 2, label: 'Depth 2 (Tactical)' },
+              { d: 3, label: 'Depth 3 (Deep)' },
             ].map(({ d, label }) => (
               <button
                 key={d}

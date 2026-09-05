@@ -118,9 +118,15 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
                 />
                 <span>
                   {isSearching
-                    ? `Searching Depth ${telemetry?.depth ?? 1}...`
+                    ? targetDepth >= 99
+                      ? `Infinite Thinking (Depth ${telemetry?.depth ?? 1})...`
+                      : `Searching Depth ${telemetry?.depth ?? 1}...`
                     : telemetry
-                    ? `Evaluation Ready (D${telemetry.depth})`
+                    ? targetDepth >= 99
+                      ? `Evaluation Ready (Depth ${telemetry.depth}, ∞)`
+                      : `Evaluation Ready (D${telemetry.depth})`
+                    : targetDepth >= 99
+                    ? `Engine Ready (∞)`
                     : `Engine Ready (D${targetDepth})`}
                 </span>
               </div>
@@ -162,7 +168,13 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
                   <span>Depth</span>
                 </div>
                 <div className="intransitive-telemetry-cell-val">
-                  {telemetry ? `D${telemetry.depth}` : `D${targetDepth}`}
+                  {telemetry
+                    ? targetDepth >= 99 && isSearching
+                      ? `D${telemetry.depth} (∞)`
+                      : `D${telemetry.depth}`
+                    : targetDepth >= 99
+                    ? '∞'
+                    : `D${targetDepth}`}
                 </div>
               </div>
 
@@ -182,7 +194,11 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
                   <span>Time</span>
                 </div>
                 <div className="intransitive-telemetry-cell-val">
-                  {telemetry ? `${telemetry.timeMs}ms` : '0ms'}
+                  {telemetry
+                    ? telemetry.timeMs >= 1000
+                      ? `${(telemetry.timeMs / 1000).toFixed(1)}s`
+                      : `${telemetry.timeMs}ms`
+                    : '0ms'}
                 </div>
               </div>
 
@@ -230,6 +246,7 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
                   { depth: 2, label: 'D2' },
                   { depth: 4, label: 'D4' },
                   { depth: 6, label: 'D6' },
+                  { depth: 99, label: '∞' },
                 ].map(({ depth, label }) => (
                   <button
                     key={depth}
@@ -237,7 +254,11 @@ export const HumanAnalysisPanel: React.FC<HumanAnalysisPanelProps> = ({
                     onClick={() => onChangeTargetDepth(depth)}
                     className={`intransitive-mini-btn ${targetDepth === depth ? 'active' : ''}`}
                     style={{ padding: '0.2rem 0.45rem', minWidth: '30px' }}
-                    title={`Search up to Depth ${depth} with iterative deepening`}
+                    title={
+                      depth >= 99
+                        ? 'Continuous infinite thinking until your next move'
+                        : `Search up to Depth ${depth} with iterative deepening`
+                    }
                   >
                     {label}
                   </button>

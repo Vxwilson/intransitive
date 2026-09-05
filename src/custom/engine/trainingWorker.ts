@@ -4,7 +4,7 @@
  */
 
 import { IntransitiveGame } from '../core/game';
-import { createZeroWeights } from './evaluator';
+import { createZeroWeights, createHeuristicWeights } from './evaluator';
 import { selectMove, getTopMoves } from './search';
 import { SelfPlayTrainer } from './trainer';
 import type {
@@ -20,6 +20,10 @@ let currentWeights: EvaluationWeights = createZeroWeights();
 let trainer = new SelfPlayTrainer(currentWeights);
 let isTurboRunning = false;
 let turboCancelled = false;
+let isArenaRunning = false;
+let isArenaPaused = false;
+let arenaCancelled = false;
+let resumeArenaFn: (() => void) | null = null;
 let currentAnalysisId = 0;
 
 function post(response: WorkerResponse): void {
@@ -27,9 +31,10 @@ function post(response: WorkerResponse): void {
 }
 
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
-  const req = event.data;
+  try {
+    const req = event.data;
 
-  switch (req.type) {
+    switch (req.type) {
     case 'START_TURBO': {
       if (isTurboRunning) return;
       isTurboRunning = true;
@@ -105,18 +110,18 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       // then greedy argmax for tactically sound midgame/endgame conversion.
       const { bestMove, score } = selectMove(game, weightsToUse, {
         depth: searchDepth,
+        thinkTimeSec: req.thinkTimeSec,
         temperature: 15.0,
         rootNoise: 0.0,
         ply: game.halfmoveClock,
         openingPlies: 4,
       });
 
-
       if (!bestMove) {
         const term = game.isTerminal();
         post({
           type: 'LIVE_STEP',
-          move: { from: 0, to: 0, piece: 'R' },
+          move: { from: 0, to: 0, piece: 'P' as any },
           san: '',
           fenAfter: game.toFEN(),
           evalScore: score,
@@ -144,25 +149,174 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     case 'ARENA_RUN': {
-      const depth = req.searchDepth ?? 1;
-      const result = SelfPlayTrainer.runArenaTournament(
-        req.checkpointA.weights,
-        req.checkpointB.weights,
-        req.numGames,
-        depth,
-        req.streamMoves
-          ? (moveData) => {
+      if (isArenaRunning) return;
+      isArenaRunning = true;
+      isArenaPaused = false;
+      arenaCancelled = false;
+
+      const depthA = req.searchDepthA ?? req.searchDepth ?? 1;
+      const depthB = req.searchDepthB ?? req.searchDepth ?? 1;
+      const timeSecA = req.thinkTimeSecA;
+      const timeSecB = req.thinkTimeSecB;
+      const totalGames = req.numGames;
+      const weightsA = req.checkpointA.weights;
+      const weightsB = req.checkpointB.weights;
+      const streamMoves = Boolean(req.streamMoves);
+      let gameIdx = 0;
+      let winsA = 0;
+      let winsB = 0;
+      let draws = 0;
+      let totalPlies = 0;
+      let movesA = 0;
+      let accurateMovesA = 0;
+      let movesB = 0;
+      let accurateMovesB = 0;
+      const benchmarkWeights = createHeuristicWeights();
+
+      function sendArenaResults(isCancelled: boolean) {
+        const gamesPlayed = Math.max(1, winsA + winsB + draws);
+        const winRateA = Math.round((winsA / gamesPlayed) * 100);
+        const winRateB = Math.round((winsB / gamesPlayed) * 100);
+        const drawRate = Math.round((draws / gamesPlayed) * 100);
+        const avgGameLength = gamesPlayed > 0 ? Math.round(totalPlies / gamesPlayed) : 0;
+        const accuracyA = movesA > 0 ? Math.round((accurateMovesA / movesA) * 100) : 50;
+        const accuracyB = movesB > 0 ? Math.round((accurateMovesB / movesB) * 100) : 50;
+
+        post({
+          type: 'ARENA_RESULT',
+          winsA,
+          winsB,
+          draws,
+          winRateA,
+          winRateB,
+          drawRate,
+          gamesPlayed: winsA + winsB + draws,
+          avgGameLength,
+          accuracyA,
+          accuracyB,
+          depthA,
+          depthB,
+          thinkTimeSecA: timeSecA,
+          thinkTimeSecB: timeSecB,
+          isCancelled,
+        });
+      }
+
+      function runNextGame() {
+        if (arenaCancelled) {
+          isArenaRunning = false;
+          isArenaPaused = false;
+          resumeArenaFn = null;
+          sendArenaResults(true);
+          return;
+        }
+
+        if (isArenaPaused) {
+          resumeArenaFn = runNextGame;
+          return;
+        }
+
+        if (gameIdx >= totalGames) {
+          isArenaRunning = false;
+          isArenaPaused = false;
+          resumeArenaFn = null;
+          sendArenaResults(false);
+          return;
+        }
+
+        const gameRes = SelfPlayTrainer.playArenaGame(
+          gameIdx,
+          totalGames,
+          weightsA,
+          weightsB,
+          depthA,
+          depthB,
+          timeSecA,
+          timeSecB,
+          (moveData) => {
+            if (streamMoves || moveData.isOver) {
               post({
                 type: 'ARENA_STREAM_MOVE',
                 ...moveData,
+                gameIndex: gameIdx + 1,
+                totalGames,
+                currentWinsA: winsA,
+                currentWinsB: winsB,
+                currentDraws: draws,
               });
             }
-          : undefined
-      );
-      post({
-        type: 'ARENA_RESULT',
-        ...result,
-      });
+          },
+          benchmarkWeights,
+          () => arenaCancelled
+        );
+
+        if (gameRes.winner === 'A') winsA++;
+        else if (gameRes.winner === 'B') winsB++;
+        else draws++;
+
+        totalPlies += gameRes.plies;
+        movesA += gameRes.movesA;
+        accurateMovesA += gameRes.accurateMovesA;
+        movesB += gameRes.movesB;
+        accurateMovesB += gameRes.accurateMovesB;
+        gameIdx++;
+
+        // Send real-time game conclusion notification
+        post({
+          type: 'ARENA_STREAM_MOVE',
+          move: gameRes.lastMove,
+          san: '',
+          fen: gameRes.lastFen,
+          isOver: true,
+          gameIndex: gameIdx,
+          totalGames,
+          currentWinsA: winsA,
+          currentWinsB: winsB,
+          currentDraws: draws,
+        });
+
+        if (gameIdx < totalGames && !arenaCancelled) {
+          if (isArenaPaused) {
+            resumeArenaFn = runNextGame;
+          } else {
+            setTimeout(runNextGame, 0);
+          }
+        } else {
+          isArenaRunning = false;
+          resumeArenaFn = null;
+          sendArenaResults(arenaCancelled);
+        }
+      }
+
+      runNextGame();
+      break;
+    }
+
+    case 'ARENA_PAUSE': {
+      if (isArenaRunning) {
+        isArenaPaused = true;
+      }
+      break;
+    }
+
+    case 'ARENA_RESUME': {
+      if (isArenaRunning && isArenaPaused) {
+        isArenaPaused = false;
+        if (resumeArenaFn) {
+          const fn = resumeArenaFn;
+          resumeArenaFn = null;
+          setTimeout(fn, 0);
+        }
+      }
+      break;
+    }
+
+    case 'ARENA_STOP': {
+      if (isArenaRunning) {
+        arenaCancelled = true;
+        isArenaPaused = false;
+        resumeArenaFn = null;
+      }
       break;
     }
 
@@ -172,7 +326,8 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       const targetFen = req.currentFen;
       const game = new IntransitiveGame(targetFen);
       const weights = req.weights ?? trainer.weights;
-      const maxDepth = req.maxDepth ?? 6;
+      const isInfinite = (req.maxDepth ?? 6) >= 99;
+      const maxDepth = isInfinite ? 16 : (req.maxDepth ?? 6);
       const count = req.count ?? 5;
       const startTime = performance.now();
       const context = { nodes: 0 };
@@ -188,12 +343,12 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
         const elapsedMs = Math.max(1, performance.now() - startTime);
         const nps = Math.round((context.nodes * 1000) / elapsedMs);
-        const isDone = currentDepth >= maxDepth;
+        const isDone = !isInfinite && currentDepth >= maxDepth;
 
         post({
           type: isDone ? 'ANALYSIS_COMPLETE' : 'ANALYSIS_PROGRESS',
           depth: currentDepth,
-          maxDepth,
+          maxDepth: isInfinite ? 99 : maxDepth,
           nodes: context.nodes,
           nps,
           timeMs: Math.round(elapsedMs),
@@ -209,7 +364,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
               post({
                 type: 'ANALYSIS_COMPLETE',
                 depth: currentDepth,
-                maxDepth,
+                maxDepth: isInfinite ? 99 : maxDepth,
                 nodes: context.nodes,
                 nps,
                 timeMs: Math.round(elapsedMs),
@@ -224,6 +379,17 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         currentDepth++;
         if (currentDepth <= maxDepth) {
           setTimeout(stepDepth, 0);
+        } else if (isInfinite) {
+          post({
+            type: 'ANALYSIS_COMPLETE',
+            depth: currentDepth - 1,
+            maxDepth: 99,
+            nodes: context.nodes,
+            nps,
+            timeMs: Math.round(elapsedMs),
+            candidateMoves: lastResult,
+            currentFen: targetFen,
+          });
         }
       }
 
@@ -263,4 +429,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       break;
     }
   }
+} catch (err) {
+  console.error('[trainingWorker Error]', err);
+}
 };

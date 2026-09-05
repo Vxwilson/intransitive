@@ -119,6 +119,12 @@ export const InterpretabilityCard: React.FC<InterpretabilityCardProps> = ({
             {weights.goalDistanceWeight.toFixed(1)}
           </p>
         </div>
+        <div className="intransitive-weight-cell runner">
+          <span className="intransitive-weight-cell-label" style={{ color: '#7c3aed' }}>Runner Threat</span>
+          <p className="intransitive-weight-cell-val">
+            {(weights.runnerWeight ?? 100).toFixed(1)}
+          </p>
+        </div>
       </div>
 
       {/* Tab 1: Live SVG Evolution Line Chart */}

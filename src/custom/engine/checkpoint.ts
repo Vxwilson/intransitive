@@ -154,6 +154,27 @@ export function deleteCheckpoint(id: string): boolean {
   }
 }
 
+export function renameCheckpoint(id: string, newName: string): boolean {
+  if (id.startsWith('preset-')) return false; // Prevent renaming built-in presets
+  const trimmed = newName.trim();
+  if (!trimmed) return false;
+  const storage = getStorage();
+
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const userList: Checkpoint[] = JSON.parse(raw);
+    const index = userList.findIndex((c) => c.id === id);
+    if (index === -1) return false;
+    userList[index].name = trimmed;
+    storage.setItem(STORAGE_KEY, JSON.stringify(userList));
+    return true;
+  } catch (err) {
+    console.error('Failed to rename checkpoint:', err);
+    return false;
+  }
+}
+
 export function clearAllUserCheckpoints(): boolean {
   const storage = getStorage();
   try {

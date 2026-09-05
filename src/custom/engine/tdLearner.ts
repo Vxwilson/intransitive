@@ -80,6 +80,7 @@ export class TDLearner {
     let dP = 0;
     let dS = 0;
     let dGoal = 0;
+    let dRunner = 0;
     let dThreat = 0;
     let dVuln = 0;
     let dTempo = 0;
@@ -98,8 +99,9 @@ export class TDLearner {
       dR += err * feat.materialR;
       dP += err * feat.materialP;
       dS += err * feat.materialS;
-      // Normalize goal gradient to match material feature scale (goal proximity sums across 12 pieces)
-      dGoal += (err * feat.goalDistanceAdvantage) * 0.1;
+      // Normalize goal gradient to match material feature scale (goal proximity sums across pieces)
+      dGoal += (err * feat.goalDistanceAdvantage) * 0.15;
+      dRunner += err * feat.runnerAdvantage;
       dThreat += err * feat.threatAdvantage;
       dVuln += err * feat.vulnerabilityAdvantage;
       dTempo += err * feat.tempoAdvantage;
@@ -111,16 +113,30 @@ export class TDLearner {
       }
     }
 
+    // Gradient delta clipping per game to prevent outlier shock
+    const MAX_PIECE_DELTA = 3.0;
+    dR = Math.max(-MAX_PIECE_DELTA, Math.min(MAX_PIECE_DELTA, dR));
+    dP = Math.max(-MAX_PIECE_DELTA, Math.min(MAX_PIECE_DELTA, dP));
+    dS = Math.max(-MAX_PIECE_DELTA, Math.min(MAX_PIECE_DELTA, dS));
+
+    const MAX_PARAM_DELTA = 3.0;
+    dGoal = Math.max(-MAX_PARAM_DELTA, Math.min(MAX_PARAM_DELTA, dGoal));
+    dRunner = Math.max(-MAX_PARAM_DELTA, Math.min(MAX_PARAM_DELTA, dRunner));
+    dThreat = Math.max(-MAX_PARAM_DELTA, Math.min(MAX_PARAM_DELTA, dThreat));
+    dVuln = Math.max(-MAX_PARAM_DELTA, Math.min(MAX_PARAM_DELTA, dVuln));
+    dTempo = Math.max(-MAX_PARAM_DELTA, Math.min(MAX_PARAM_DELTA, dTempo));
+
     // Apply updates with minimum piece floor of 5.0 (pieces never become 1-value throwaway tokens)
     let newR = Math.max(5.0, Math.min(300, weights.pieceValues.R + dR));
     let newP = Math.max(5.0, Math.min(300, weights.pieceValues.P + dP));
     let newS = Math.max(5.0, Math.min(300, weights.pieceValues.S + dS));
 
-    // Gentle mean-centering regularization to stabilize cyclic limit cycles (R > S > P > R)
-    // Prevents runaways while fully preserving relative tactical advantages
+    // Adaptive mean-centering regularization to stabilize cyclic limit cycles (R > S > P > R)
+    // Prevents runaways (e.g. Paper ballooning to 155 while Scissors crashes to 79)
     const meanVal = (newR + newP + newS) / 3;
     if (meanVal > 15) {
-      const decay = 0.005; // 0.5% pull towards mean per game
+      const maxDev = Math.max(Math.abs(newR - meanVal), Math.abs(newP - meanVal), Math.abs(newS - meanVal));
+      const decay = maxDev > 25 ? 0.02 : 0.005;
       newR = Math.max(5.0, newR - (newR - meanVal) * decay);
       newP = Math.max(5.0, newP - (newP - meanVal) * decay);
       newS = Math.max(5.0, newS - (newS - meanVal) * decay);
@@ -132,6 +148,7 @@ export class TDLearner {
 
     // Anchor goal distance weight with a minimum floor of 10.0 so the engine never unlearns touchdown
     weights.goalDistanceWeight = Math.max(10.0, Math.min(100, weights.goalDistanceWeight + dGoal));
+    weights.runnerWeight = Math.max(15.0, Math.min(120, (weights.runnerWeight ?? 80) + dRunner));
     weights.threatBonus = Math.max(2.0, Math.min(50, weights.threatBonus + dThreat));
     weights.vulnerabilityPenalty = Math.max(2.0, Math.min(50, weights.vulnerabilityPenalty + dVuln));
     weights.tempoBonus = Math.max(0, Math.min(20, weights.tempoBonus + dTempo));

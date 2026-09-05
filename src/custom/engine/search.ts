@@ -36,6 +36,15 @@ export function formatEvalScore(
 }
 
 /**
+ * Chebyshev distance to goal square (number of king-steps).
+ */
+export function goalChebyshevDist(sq: number, goalSq: number): number {
+  const r1 = Math.floor(sq / 9), c1 = sq % 9;
+  const r2 = Math.floor(goalSq / 9), c2 = goalSq % 9;
+  return Math.max(Math.abs(r1 - r2), Math.abs(c1 - c2));
+}
+
+/**
  * Minimax search with Alpha-Beta pruning and mate-distance scoring.
  * Score is always evaluated from Blue's perspective (positive = Blue advantage).
  */
@@ -67,16 +76,32 @@ export function minimax(
     return evaluate(game, weights);
   }
 
-  // Tactical move ordering: prioritize touchdown wins and captures to maximize alpha-beta cutoffs
+  // Tactical move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
   if (depth > 1 && moves.length > 1) {
     const goalSquare = game.activePlayer === PLAYER_BLUE ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
     moves.sort((a, b) => {
-      const aGoal = a.to === goalSquare ? 10000 : 0;
-      const bGoal = b.to === goalSquare ? 10000 : 0;
+      const aGoal = a.to === goalSquare ? 20000 : 0;
+      const bGoal = b.to === goalSquare ? 20000 : 0;
       if (aGoal !== bGoal) return bGoal - aGoal;
-      const aCap = a.captured !== undefined ? 1000 : 0;
-      const bCap = b.captured !== undefined ? 1000 : 0;
-      return bCap - aCap;
+
+      const aDist = goalChebyshevDist(a.to, goalSquare);
+      const bDist = goalChebyshevDist(b.to, goalSquare);
+
+      // Distance 1 runner threat (immediate M1 threat)
+      const aD1 = aDist === 1 ? 10000 : 0;
+      const bD1 = bDist === 1 ? 10000 : 0;
+      if (aD1 !== bD1) return bD1 - aD1;
+
+      // Distance 2 runner threat
+      const aD2 = aDist === 2 ? 3000 : 0;
+      const bD2 = bDist === 2 ? 3000 : 0;
+      if (aD2 !== bD2) return bD2 - aD2;
+
+      const aCap = a.captured !== undefined ? 1500 : 0;
+      const bCap = b.captured !== undefined ? 1500 : 0;
+      if (aCap !== bCap) return bCap - aCap;
+
+      return aDist - bDist;
     });
   }
 
@@ -127,13 +152,14 @@ export interface SelectMoveOptions {
   rootNoise?: number;        // Dirichlet exploration noise fraction (e.g. 0.25 in AlphaZero). 0 = disabled.
   ply?: number;              // Current game ply for temperature annealing.
   openingPlies?: number;     // Number of initial plies to apply temperature (default 6).
+  thinkTimeSec?: number;     // Thinking time budget in seconds (mutually exclusive with fixed depth).
+  thinkTimeMs?: number;      // Thinking time budget in milliseconds.
 }
 
 /**
- * Selects a move for the active player using AlphaZero-style Softmax temperature
- * sampling and Dirichlet root noise, with automatic annealing to deterministic play.
+ * Core fixed-depth move selection for active player.
  */
-export function selectMove(
+function selectMoveFixedDepth(
   game: IntransitiveGame,
   weights: EvaluationWeights,
   optionsOrDepth: number | SelectMoveOptions = 1,
@@ -265,6 +291,60 @@ export function selectMove(
 }
 
 /**
+ * Selects a move for the active player.
+ * Supports fixed depth (number or { depth }) or time-budgeted iterative deepening ({ thinkTimeSec } / { thinkTimeMs }).
+ */
+export function selectMove(
+  game: IntransitiveGame,
+  weights: EvaluationWeights,
+  optionsOrDepth: number | SelectMoveOptions = 1,
+  legacyEpsilon: number = 0.0
+): SearchResult {
+  // If time budget is specified, run iterative deepening up to allotted time
+  if (
+    typeof optionsOrDepth === 'object' &&
+    ((optionsOrDepth.thinkTimeSec && optionsOrDepth.thinkTimeSec > 0) ||
+      (optionsOrDepth.thinkTimeMs && optionsOrDepth.thinkTimeMs > 0))
+  ) {
+    const timeLimitMs =
+      (optionsOrDepth.thinkTimeSec ? optionsOrDepth.thinkTimeSec * 1000 : optionsOrDepth.thinkTimeMs) ??
+      1000;
+    const startTime = performance.now();
+    const maxSearchDepth = optionsOrDepth.depth ?? 6;
+    let bestResult: SearchResult = { bestMove: null, score: evaluate(game, weights) };
+
+    for (let d = 1; d <= maxSearchDepth; d++) {
+      const singleDepthOpts: SelectMoveOptions = {
+        ...optionsOrDepth,
+        depth: d,
+        thinkTimeSec: undefined,
+        thinkTimeMs: undefined,
+      };
+      const res = selectMoveFixedDepth(game, weights, singleDepthOpts, legacyEpsilon);
+      if (res.bestMove) {
+        bestResult = res;
+      }
+
+      // If decisive touchdown or forced mate is found, exit immediately
+      if (Math.abs(res.score) >= WIN_SCORE - 100) {
+        break;
+      }
+
+      const elapsed = performance.now() - startTime;
+      // If we've consumed >= 60% of budget or are within 30ms of the limit, the next depth will overshoot
+      if (elapsed >= timeLimitMs * 0.6 || elapsed >= timeLimitMs - 30) {
+        break;
+      }
+    }
+
+    return bestResult;
+  }
+
+  // Default: Direct fixed-depth search
+  return selectMoveFixedDepth(game, weights, optionsOrDepth, legacyEpsilon);
+}
+
+/**
  * Samples a Gamma(alpha, 1) random variable using Marsaglia and Tsang method.
  * Used for generating exact Dirichlet distributions.
  */
@@ -355,43 +435,81 @@ export function getTopMoves(
   weights: EvaluationWeights,
   count: number = 5,
   depth: number = 1,
-  context?: { nodes: number }
+  context?: { nodes: number },
+  isAborted?: () => boolean
 ): RankedMove[] {
   const moves = game.generateLegalMoves();
   if (moves.length === 0) return [];
 
   const isMaximizing = game.activePlayer === PLAYER_BLUE;
+
+  // Root move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
+  if (depth > 1 && moves.length > 1) {
+    const goalSquare = isMaximizing ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
+    moves.sort((a, b) => {
+      const aGoal = a.to === goalSquare ? 20000 : 0;
+      const bGoal = b.to === goalSquare ? 20000 : 0;
+      if (aGoal !== bGoal) return bGoal - aGoal;
+
+      const aDist = goalChebyshevDist(a.to, goalSquare);
+      const bDist = goalChebyshevDist(b.to, goalSquare);
+
+      // Distance 1 runner threat (immediate M1 threat)
+      const aD1 = aDist === 1 ? 10000 : 0;
+      const bD1 = bDist === 1 ? 10000 : 0;
+      if (aD1 !== bD1) return bD1 - aD1;
+
+      // Distance 2 runner threat
+      const aD2 = aDist === 2 ? 3000 : 0;
+      const bD2 = bDist === 2 ? 3000 : 0;
+      if (aD2 !== bD2) return bD2 - aD2;
+
+      const aCap = a.captured !== undefined ? 1500 : 0;
+      const bCap = b.captured !== undefined ? 1500 : 0;
+      if (aCap !== bCap) return bCap - aCap;
+
+      return aDist - bDist;
+    });
+  }
+
   const scoredMoves: Array<{
     move: Move;
     score: number;
     san: string;
     threat?: string;
-    pv: string[];
     isMate: boolean;
     mateInPlies?: number;
   }> = [];
 
+  let hasDecisiveMate = false;
+
   for (let i = 0; i < moves.length; i++) {
+    if (isAborted && isAborted()) break;
+
     const move = moves[i];
     const san = game.formatMoveSAN(move);
     game.makeMove(move);
 
     let score: number;
-    if (depth <= 1) {
+    // If a decisive forced mate is already found in top candidates, shallow-eval distant moves
+    if (hasDecisiveMate && i >= count) {
+      if (context) context.nodes++;
+      score = evaluate(game, weights);
+    } else if (depth <= 1) {
       if (context) context.nodes++;
       score = evaluate(game, weights);
     } else {
       score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1, context);
     }
 
-    // Extract up to 5 subsequent moves for the continuation line
-    const pv = extractPVContinuation(game, weights, 5);
-
     game.unmakeMove();
 
     // Mate / Touchdown detection
     const MATE_THRESHOLD = WIN_SCORE - 100;
     const isMate = Math.abs(score) >= MATE_THRESHOLD;
+    if (isMate && ((isMaximizing && score > 0) || (!isMaximizing && score < 0))) {
+      hasDecisiveMate = true;
+    }
     let mateInPlies: number | undefined;
     if (isMate) {
       if (score > 0) {
@@ -413,7 +531,7 @@ export function getTopMoves(
       threat = `Capture ${move.captured}`;
     }
 
-    scoredMoves.push({ move, score, san, threat, pv, isMate, mateInPlies });
+    scoredMoves.push({ move, score, san, threat, isMate, mateInPlies });
   }
 
   // Sort best to worst based on active player
@@ -426,15 +544,23 @@ export function getTopMoves(
   const limit = Math.min(count, scoredMoves.length);
   const result: RankedMove[] = [];
   for (let i = 0; i < limit; i++) {
+    if (isAborted && isAborted()) break;
+    const item = scoredMoves[i];
+
+    // Compute continuation line only for the top candidate moves
+    game.makeMove(item.move);
+    const pv = extractPVContinuation(game, weights, 5);
+    game.unmakeMove();
+
     result.push({
-      move: scoredMoves[i].move,
+      move: item.move,
       rank: i + 1,
-      score: scoredMoves[i].score,
-      san: scoredMoves[i].san,
-      threat: scoredMoves[i].threat,
-      pv: scoredMoves[i].pv,
-      isMate: scoredMoves[i].isMate,
-      mateInPlies: scoredMoves[i].mateInPlies,
+      score: item.score,
+      san: item.san,
+      threat: item.threat,
+      pv,
+      isMate: item.isMate,
+      mateInPlies: item.mateInPlies,
     });
   }
 

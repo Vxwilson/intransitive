@@ -157,6 +157,7 @@ export class SelfPlayTrainer {
         finalFeats.materialS * 100;
       const posAdv =
         finalFeats.goalDistanceAdvantage * 10 +
+        finalFeats.runnerAdvantage * 15 +
         finalFeats.threatAdvantage * 10;
       const totalAdv = matAdv + posAdv;
 
@@ -241,8 +242,32 @@ export class SelfPlayTrainer {
     weightsA: EvaluationWeights,
     weightsB: EvaluationWeights,
     numGames: number = 20,
-    searchDepth: number = 1,
-    onMove?: (moveData: { move: Move; san: string; fen: string; isOver: boolean; gameIndex: number }) => void
+    searchDepthA: number = 1,
+    searchDepthB?: number | ((moveData: {
+      move: Move;
+      san: string;
+      fen: string;
+      isOver: boolean;
+      gameIndex: number;
+      totalGames?: number;
+      currentWinsA?: number;
+      currentWinsB?: number;
+      currentDraws?: number;
+    }) => void),
+    onMove?: (moveData: {
+      move: Move;
+      san: string;
+      fen: string;
+      isOver: boolean;
+      gameIndex: number;
+      totalGames?: number;
+      currentWinsA?: number;
+      currentWinsB?: number;
+      currentDraws?: number;
+    }) => void,
+    thinkTimeSecA?: number,
+    thinkTimeSecB?: number,
+    isCancelled?: (() => boolean) | { isCancelled: boolean }
   ): {
     winsA: number;
     winsB: number;
@@ -254,7 +279,26 @@ export class SelfPlayTrainer {
     avgGameLength: number;
     accuracyA: number;
     accuracyB: number;
+    isCancelled?: boolean;
+    thinkTimeSecA?: number;
+    thinkTimeSecB?: number;
   } {
+    let depthB = searchDepthA;
+    let onMoveFn = onMove;
+    if (typeof searchDepthB === 'function') {
+      onMoveFn = searchDepthB;
+      depthB = searchDepthA;
+    } else if (typeof searchDepthB === 'number') {
+      depthB = searchDepthB;
+    }
+
+    const checkCancelled = () => {
+      if (!isCancelled) return false;
+      if (typeof isCancelled === 'function') return isCancelled();
+      if (typeof isCancelled === 'object' && 'isCancelled' in isCancelled) return Boolean((isCancelled as any).isCancelled);
+      return Boolean(isCancelled);
+    };
+
     const benchmarkWeights = createHeuristicWeights();
     let winsA = 0;
     let winsB = 0;
@@ -266,78 +310,53 @@ export class SelfPlayTrainer {
     let accurateMovesB = 0;
 
     for (let i = 0; i < numGames; i++) {
-      const game = new IntransitiveGame();
-      const aIsBlue = i % 2 === 0;
-      let plies = 0;
+      if (checkCancelled()) break;
 
-      while (plies < 80) {
-        const status = game.isTerminal();
-        if (status.isOver) break;
+      const gameRes = SelfPlayTrainer.playArenaGame(
+        i,
+        numGames,
+        weightsA,
+        weightsB,
+        searchDepthA,
+        depthB,
+        thinkTimeSecA,
+        thinkTimeSecB,
+        onMoveFn,
+        benchmarkWeights,
+        checkCancelled
+      );
 
-        const isTurnA = (game.activePlayer === PLAYER_BLUE && aIsBlue) ||
-                        (game.activePlayer === PLAYER_RED && !aIsBlue);
+      if (gameRes.winner === 'A') winsA++;
+      else if (gameRes.winner === 'B') winsB++;
+      else draws++;
 
-        const currentWeights = isTurnA ? weightsA : weightsB;
-        // AlphaZero Tournament schedule: T = 15 cp for first 4 plies (tactical opening branching), then T = 0 greedy
-        const { bestMove } = selectMove(game, currentWeights, {
-          depth: searchDepth,
-          temperature: 15.0,
-          rootNoise: 0.0,
-          ply: plies,
-          openingPlies: 4,
+      totalPlies += gameRes.plies;
+      movesA += gameRes.movesA;
+      accurateMovesA += gameRes.accurateMovesA;
+      movesB += gameRes.movesB;
+      accurateMovesB += gameRes.accurateMovesB;
+
+      // Update real-time tally after game concludes
+      if (onMoveFn) {
+        onMoveFn({
+          move: gameRes.lastMove,
+          san: '',
+          fen: gameRes.lastFen,
+          isOver: true,
+          gameIndex: i + 1,
+          totalGames: numGames,
+          currentWinsA: winsA,
+          currentWinsB: winsB,
+          currentDraws: draws,
         });
-        if (!bestMove) break;
-
-        // Evaluate move agreement against benchmark
-        const benchmark = selectMove(game, benchmarkWeights, 1, 0.0);
-        const isAccurate = benchmark.bestMove !== null &&
-          bestMove.from === benchmark.bestMove.from &&
-          bestMove.to === benchmark.bestMove.to;
-
-        if (isTurnA) {
-          movesA++;
-          if (isAccurate) accurateMovesA++;
-        } else {
-          movesB++;
-          if (isAccurate) accurateMovesB++;
-        }
-
-        const san = onMove ? game.formatMoveSAN(bestMove) : '';
-        game.makeMove(bestMove);
-        plies++;
-
-        if (onMove && i < Math.min(numGames, 100)) {
-          onMove({
-            move: bestMove,
-            san,
-            fen: game.toFEN(),
-            isOver: game.isTerminal().isOver,
-            gameIndex: i + 1,
-          });
-        }
-      }
-
-      totalPlies += plies;
-      const status = game.isTerminal();
-      if (status.isOver) {
-        if (status.winner === PLAYER_BLUE) {
-          if (aIsBlue) winsA++;
-          else winsB++;
-        } else if (status.winner === PLAYER_RED) {
-          if (!aIsBlue) winsA++;
-          else winsB++;
-        } else {
-          draws++;
-        }
-      } else {
-        draws++;
       }
     }
 
-    const winRateA = Math.round((winsA / numGames) * 100);
-    const winRateB = Math.round((winsB / numGames) * 100);
-    const drawRate = Math.round((draws / numGames) * 100);
-    const avgGameLength = numGames > 0 ? Math.round(totalPlies / numGames) : 0;
+    const gamesPlayed = Math.max(1, winsA + winsB + draws);
+    const winRateA = Math.round((winsA / gamesPlayed) * 100);
+    const winRateB = Math.round((winsB / gamesPlayed) * 100);
+    const drawRate = Math.round((draws / gamesPlayed) * 100);
+    const avgGameLength = gamesPlayed > 0 ? Math.round(totalPlies / gamesPlayed) : 0;
     const accuracyA = movesA > 0 ? Math.round((accurateMovesA / movesA) * 100) : 50;
     const accuracyB = movesB > 0 ? Math.round((accurateMovesB / movesB) * 100) : 50;
 
@@ -348,10 +367,134 @@ export class SelfPlayTrainer {
       winRateA,
       winRateB,
       drawRate,
-      gamesPlayed: numGames,
+      gamesPlayed: winsA + winsB + draws,
       avgGameLength,
       accuracyA,
       accuracyB,
+      isCancelled: checkCancelled(),
+      thinkTimeSecA,
+      thinkTimeSecB,
+    };
+  }
+
+  /**
+   * Plays a single match between Fighter A and Fighter B with alternate side coloring.
+   */
+  public static playArenaGame(
+    gameIndex: number,
+    totalGames: number,
+    weightsA: EvaluationWeights,
+    weightsB: EvaluationWeights,
+    depthA: number = 1,
+    depthB: number = 1,
+    thinkTimeSecA?: number,
+    thinkTimeSecB?: number,
+    onMove?: (moveData: any) => void,
+    benchmarkWeights?: EvaluationWeights,
+    isCancelled?: (() => boolean) | { isCancelled: boolean }
+  ): {
+    winner: 'A' | 'B' | 'draw';
+    plies: number;
+    movesA: number;
+    accurateMovesA: number;
+    movesB: number;
+    accurateMovesB: number;
+    lastMove: Move;
+    lastFen: string;
+  } {
+    const game = new IntransitiveGame();
+    const aIsBlue = gameIndex % 2 === 0;
+    const benchWeights = benchmarkWeights ?? createHeuristicWeights();
+    let plies = 0;
+    let movesA = 0;
+    let accurateMovesA = 0;
+    let movesB = 0;
+    let accurateMovesB = 0;
+    let lastMove: Move = { from: 0, to: 0, piece: 'P' as any };
+
+    const checkCancelled = () => {
+      if (!isCancelled) return false;
+      if (typeof isCancelled === 'function') return isCancelled();
+      if (typeof isCancelled === 'object' && 'isCancelled' in isCancelled) return Boolean((isCancelled as any).isCancelled);
+      return Boolean(isCancelled);
+    };
+
+    while (plies < 80) {
+      if (checkCancelled()) break;
+      const status = game.isTerminal();
+      if (status.isOver) break;
+
+      const isTurnA =
+        (game.activePlayer === PLAYER_BLUE && aIsBlue) ||
+        (game.activePlayer === PLAYER_RED && !aIsBlue);
+
+      const currentWeights = isTurnA ? weightsA : weightsB;
+      const currentDepth = isTurnA ? depthA : depthB;
+      const currentThinkTime = isTurnA ? thinkTimeSecA : thinkTimeSecB;
+
+      // AlphaZero Tournament schedule: T = 15 cp for first 4 plies, then T = 0 greedy
+      const { bestMove } = selectMove(game, currentWeights, {
+        depth: currentDepth,
+        thinkTimeSec: currentThinkTime,
+        temperature: 15.0,
+        rootNoise: 0.0,
+        ply: plies,
+        openingPlies: 4,
+      });
+
+      if (!bestMove) break;
+      lastMove = bestMove;
+
+      // Evaluate move agreement against benchmark
+      const benchmark = selectMove(game, benchWeights, 1, 0.0);
+      const isAccurate =
+        benchmark.bestMove !== null &&
+        bestMove.from === benchmark.bestMove.from &&
+        bestMove.to === benchmark.bestMove.to;
+
+      if (isTurnA) {
+        movesA++;
+        if (isAccurate) accurateMovesA++;
+      } else {
+        movesB++;
+        if (isAccurate) accurateMovesB++;
+      }
+
+      const san = onMove ? game.formatMoveSAN(bestMove) : '';
+      game.makeMove(bestMove);
+      plies++;
+
+      if (onMove && gameIndex < Math.min(totalGames, 100)) {
+        onMove({
+          move: bestMove,
+          san,
+          fen: game.toFEN(),
+          isOver: game.isTerminal().isOver,
+          gameIndex: gameIndex + 1,
+          totalGames,
+        });
+      }
+    }
+
+    let winner: 'A' | 'B' | 'draw' = 'draw';
+    const status = game.isTerminal();
+    if (status.isOver) {
+      if (status.winner === PLAYER_BLUE) {
+        winner = aIsBlue ? 'A' : 'B';
+      } else if (status.winner === PLAYER_RED) {
+        winner = !aIsBlue ? 'A' : 'B';
+      }
+    }
+
+    return {
+      winner,
+      plies,
+      movesA,
+      accurateMovesA,
+      movesB,
+      accurateMovesB,
+      lastMove,
+      lastFen: game.toFEN(),
     };
   }
 }

@@ -12,6 +12,10 @@ import {
   ArrowUpDown,
   BookmarkPlus,
   Check,
+  Edit3,
+  Activity,
+  Target,
+  Clock,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import { IntransitiveGame } from '../core/game';
@@ -29,6 +33,7 @@ import type {
 import {
   getStoredCheckpoints,
   saveCheckpoint,
+  renameCheckpoint,
   deleteCheckpoint,
   clearAllUserCheckpoints,
   exportCheckpointsJSON,
@@ -42,6 +47,7 @@ import { LiveControls } from './LiveControls';
 import { TurboTrainerCard } from './TurboTrainerCard';
 import { InterpretabilityCard } from './InterpretabilityCard';
 import { ArenaCard } from './ArenaCard';
+import { ArenaRealtimeResultsCard } from './ArenaRealtimeResultsCard';
 import { HumanAnalysisPanel } from './HumanAnalysisPanel';
 import { MoveListSection } from './MoveListSection';
 import { StudioSettingsCard } from './StudioSettingsCard';
@@ -61,6 +67,15 @@ interface SavedSettings {
   analysisTargetDepth?: number;
   tournamentZoomEnabled?: boolean;
   arenaSearchDepth?: number;
+  fighterADepth?: number;
+  fighterBDepth?: number;
+  fighterAMode?: 'depth' | 'time';
+  fighterBMode?: 'depth' | 'time';
+  fighterATimeSec?: number;
+  fighterBTimeSec?: number;
+  playOpponentMode?: 'depth' | 'time';
+  playOpponentDepth?: number;
+  playOpponentTimeSec?: number;
   trainingSearchDepth?: number;
   learningRateAnnealing?: boolean;
   soundEnabled?: boolean;
@@ -130,6 +145,14 @@ export const IntransitiveStudio: React.FC = () => {
     winRateB: number;
     drawRate: number;
     gamesPlayed: number;
+    avgGameLength?: number;
+    accuracyA?: number;
+    accuracyB?: number;
+    depthA?: number;
+    depthB?: number;
+    thinkTimeSecA?: number;
+    thinkTimeSecB?: number;
+    isCancelled?: boolean;
   } | null>(null);
 
   // Visual Arena Fighters Selection
@@ -141,6 +164,25 @@ export const IntransitiveStudio: React.FC = () => {
   const [arenaSearchDepth, setArenaSearchDepth] = useState<number>(
     initialSettings.arenaSearchDepth ?? 2
   );
+  const [fighterADepth, setFighterADepth] = useState<number>(
+    initialSettings.fighterADepth ?? initialSettings.arenaSearchDepth ?? 2
+  );
+  const [fighterBDepth, setFighterBDepth] = useState<number>(
+    initialSettings.fighterBDepth ?? initialSettings.arenaSearchDepth ?? 2
+  );
+  const [fighterAMode, setFighterAMode] = useState<'depth' | 'time'>(
+    initialSettings.fighterAMode ?? 'depth'
+  );
+  const [fighterBMode, setFighterBMode] = useState<'depth' | 'time'>(
+    initialSettings.fighterBMode ?? 'depth'
+  );
+  const [fighterATimeSec, setFighterATimeSec] = useState<number>(
+    initialSettings.fighterATimeSec ?? 1.0
+  );
+  const [fighterBTimeSec, setFighterBTimeSec] = useState<number>(
+    initialSettings.fighterBTimeSec ?? 1.0
+  );
+  const [isTournamentPaused, setIsTournamentPaused] = useState<boolean>(false);
   const [trainingSearchDepth, setTrainingSearchDepth] = useState<number>(
     initialSettings.trainingSearchDepth ?? 1
   );
@@ -152,12 +194,22 @@ export const IntransitiveStudio: React.FC = () => {
   const [selectedOpponentId, setSelectedOpponentId] = useState<string>(
     initialSettings.selectedOpponentId ?? 'preset-heuristic-master'
   );
+  const [playOpponentMode, setPlayOpponentMode] = useState<'depth' | 'time'>(
+    initialSettings.playOpponentMode ?? 'depth'
+  );
+  const [playOpponentDepth, setPlayOpponentDepth] = useState<number>(
+    initialSettings.playOpponentDepth ?? 2
+  );
+  const [playOpponentTimeSec, setPlayOpponentTimeSec] = useState<number>(
+    initialSettings.playOpponentTimeSec ?? 1.0
+  );
   const [humanColor, setHumanColor] = useState<'blue' | 'red'>(
     initialSettings.humanColor ?? 'blue'
   );
 
   // Coupled Engine Model for Evaluation & Human Play Move Analysis
   const [evalModelId, setEvalModelId] = useState<string>(
+
     initialSettings.evalModelId ?? 'preset-heuristic-master'
   );
   const [isAnalysisEnabled, setIsAnalysisEnabled] = useState<boolean>(
@@ -182,10 +234,29 @@ export const IntransitiveStudio: React.FC = () => {
   const [isSnapshotSaved, setIsSnapshotSaved] = useState<boolean>(false);
 
   // Tournament Live Board Zoom Queue & Refs
-  const zoomQueueRef = useRef<{ move: Move; san: string; fen: string; isOver: boolean; gameIndex?: number }[]>([]);
+  const zoomQueueRef = useRef<{
+    move: Move;
+    san: string;
+    fen: string;
+    isOver: boolean;
+    gameIndex?: number;
+    totalGames?: number;
+    currentWinsA?: number;
+    currentWinsB?: number;
+    currentDraws?: number;
+  }[]>([]);
   const pendingTournamentResultRef = useRef<any>(null);
   const [isZoomingTournament, setIsZoomingTournament] = useState<boolean>(false);
   const currentZoomGameRef = useRef<number>(1);
+  const [arenaLiveResults, setArenaLiveResults] = useState<{
+    gameIndex: number;
+    totalGames: number;
+    winsA: number;
+    winsB: number;
+    draws: number;
+    isSimulating: boolean;
+  } | null>(null);
+  const [arenaViewMode, setArenaViewMode] = useState<'realtime' | 'notation'>('realtime');
 
   // Volatile state refs to avoid tearing down the Web Worker
   const soundEnabledRef = useRef(soundEnabled);
@@ -204,8 +275,9 @@ export const IntransitiveStudio: React.FC = () => {
     isZoomingTournamentRef.current = isZoomingTournament;
   }, [isZoomingTournament]);
 
-  // Worker reference
+  // Worker references (training/gameplay worker + dedicated analysis worker)
   const workerRef = useRef<Worker | null>(null);
+  const analysisWorkerRef = useRef<Worker | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Helper to fetch weights for a model identifier
@@ -271,15 +343,21 @@ export const IntransitiveStudio: React.FC = () => {
     };
   }, [evalModelId, stats, weights, checkpoints]);
 
-  // Synchronous candidate moves (instant baseline at Depth 2)
+  const currentStatus = game.isTerminal();
+  const isHumanTurn =
+    activeTab === 'play' &&
+    !currentStatus.isOver &&
+    game.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED);
+
+  // Synchronous candidate moves (instant baseline at Depth 1 for <1ms latency)
   const syncCandidateMoves = useMemo(() => {
-    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return [];
-    return getTopMoves(game, activeEvalModel.weights, 5, Math.min(2, analysisTargetDepth));
-  }, [activeTab, isAnalysisEnabled, game, activeEvalModel, analysisTargetDepth]);
+    if (!isHumanTurn || !isAnalysisEnabled) return [];
+    return getTopMoves(game, activeEvalModel.weights, 5, Math.min(1, analysisTargetDepth));
+  }, [isHumanTurn, isAnalysisEnabled, game, activeEvalModel, analysisTargetDepth]);
 
   // Combined candidate moves: prefer deeper worker iterative results matching current position
   const candidateMoves = useMemo(() => {
-    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return [];
+    if (!isHumanTurn || !isAnalysisEnabled) return [];
     const currentFen = game.toFEN();
     if (
       analysisTelemetry &&
@@ -289,9 +367,9 @@ export const IntransitiveStudio: React.FC = () => {
       return analysisTelemetry.candidateMoves;
     }
     return syncCandidateMoves;
-  }, [activeTab, isAnalysisEnabled, game, analysisTelemetry, syncCandidateMoves]);
+  }, [isHumanTurn, isAnalysisEnabled, game, analysisTelemetry, syncCandidateMoves]);
 
-  // Derived real-time telemetry: reflects worker progress or instantaneous depth-2 baseline
+  // Derived real-time telemetry: reflects worker progress or instantaneous depth-1 baseline
   const displayedTelemetry = useMemo((): AnalysisTelemetry | null => {
     if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return null;
     const currentFen = game.toFEN();
@@ -299,26 +377,68 @@ export const IntransitiveStudio: React.FC = () => {
       return analysisTelemetry;
     }
     return {
-      depth: Math.min(2, analysisTargetDepth),
+      depth: 1,
       maxDepth: analysisTargetDepth,
       nodes: 0,
       nps: 0,
       timeMs: 0,
       candidateMoves: syncCandidateMoves,
-      isSearching: true,
+      isSearching: isHumanTurn,
       currentFen,
     };
-  }, [activeTab, isAnalysisEnabled, game, analysisTelemetry, analysisTargetDepth, syncCandidateMoves]);
+  }, [activeTab, isAnalysisEnabled, game, analysisTelemetry, analysisTargetDepth, syncCandidateMoves, isHumanTurn]);
 
-  // Background iterative deepening engine analysis trigger
+  // Background iterative deepening engine analysis trigger (only active during human's turn)
   useEffect(() => {
-    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) {
-      workerRef.current?.postMessage({ type: 'STOP_ANALYSIS' });
+    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver || !isHumanTurn) {
+      if (analysisWorkerRef.current) {
+        analysisWorkerRef.current.terminate();
+        analysisWorkerRef.current = null;
+      }
       return;
     }
 
+    // Terminate any previous analysis worker so stale searches are killed immediately with 0 latency
+    if (analysisWorkerRef.current) {
+      analysisWorkerRef.current.terminate();
+      analysisWorkerRef.current = null;
+    }
+
     const currentFen = game.toFEN();
-    workerRef.current?.postMessage({
+    const worker = new Worker(
+      new URL('../engine/analysisWorker.ts', import.meta.url),
+      { type: 'module' }
+    );
+    analysisWorkerRef.current = worker;
+
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      const data = event.data;
+      if (data.type === 'ANALYSIS_PROGRESS') {
+        setAnalysisTelemetry({
+          depth: data.depth,
+          maxDepth: data.maxDepth,
+          nodes: data.nodes,
+          nps: data.nps,
+          timeMs: data.timeMs,
+          candidateMoves: data.candidateMoves,
+          isSearching: true,
+          currentFen: data.currentFen,
+        });
+      } else if (data.type === 'ANALYSIS_COMPLETE') {
+        setAnalysisTelemetry({
+          depth: data.depth,
+          maxDepth: data.maxDepth,
+          nodes: data.nodes,
+          nps: data.nps,
+          timeMs: data.timeMs,
+          candidateMoves: data.candidateMoves,
+          isSearching: false,
+          currentFen: data.currentFen,
+        });
+      }
+    };
+
+    worker.postMessage({
       type: 'START_ANALYSIS',
       currentFen,
       weights: activeEvalModel.weights,
@@ -327,9 +447,12 @@ export const IntransitiveStudio: React.FC = () => {
     });
 
     return () => {
-      workerRef.current?.postMessage({ type: 'STOP_ANALYSIS' });
+      worker.terminate();
+      if (analysisWorkerRef.current === worker) {
+        analysisWorkerRef.current = null;
+      }
     };
-  }, [game, activeTab, isAnalysisEnabled, activeEvalModel, analysisTargetDepth]);
+  }, [game, activeTab, isAnalysisEnabled, isHumanTurn, activeEvalModel, analysisTargetDepth]);
 
   // Persist settings on change
   useEffect(() => {
@@ -337,11 +460,20 @@ export const IntransitiveStudio: React.FC = () => {
       evalModelId,
       humanColor,
       selectedOpponentId,
+      playOpponentMode,
+      playOpponentDepth,
+      playOpponentTimeSec,
       isAnalysisEnabled,
       analysisMaxRows,
       analysisTargetDepth,
       tournamentZoomEnabled,
       arenaSearchDepth,
+      fighterADepth,
+      fighterBDepth,
+      fighterAMode,
+      fighterBMode,
+      fighterATimeSec,
+      fighterBTimeSec,
       trainingSearchDepth,
       learningRateAnnealing,
       soundEnabled,
@@ -353,11 +485,20 @@ export const IntransitiveStudio: React.FC = () => {
     evalModelId,
     humanColor,
     selectedOpponentId,
+    playOpponentMode,
+    playOpponentDepth,
+    playOpponentTimeSec,
     isAnalysisEnabled,
     analysisMaxRows,
     analysisTargetDepth,
     tournamentZoomEnabled,
     arenaSearchDepth,
+    fighterADepth,
+    fighterBDepth,
+    fighterAMode,
+    fighterBMode,
+    fighterATimeSec,
+    fighterBTimeSec,
     trainingSearchDepth,
     learningRateAnnealing,
     soundEnabled,
@@ -408,46 +549,86 @@ export const IntransitiveStudio: React.FC = () => {
             return;
           }
 
-          setGame((prevGame) => {
-            const nextGame = prevGame.clone();
-            nextGame.makeMove(data.move);
+          const nextGame = new IntransitiveGame(data.fenAfter);
+          setGame(nextGame);
+          setLastMove(data.move);
+          setSelectedSquare(null);
+          setMoveHistory((prev) => [
+            ...prev,
+            { move: data.move, san: data.san, fen: data.fenAfter },
+          ]);
+          setHistoryIndex((prev) => prev + 1);
+          setAnalysisTelemetry(null);
 
-            // Audio cues
-            if (soundEnabledRef.current) {
-              if (data.move.captured) {
-                sounds.playCapture();
-              } else {
-                sounds.playMove();
-              }
+          // Audio cues
+          if (soundEnabledRef.current) {
+            if (data.move.captured) {
+              sounds.playCapture();
+            } else {
+              sounds.playMove();
             }
+          }
 
-            setLastMove(data.move);
-            setMoveHistory((prev) => [
-              ...prev,
-              { move: data.move, san: data.san, fen: data.fenAfter },
-            ]);
-            setHistoryIndex((prev) => prev + 1);
-
-            if (data.isOver) {
-              setIsPlayingLive(false);
-              if (soundEnabledRef.current) sounds.playVictory();
-            }
-
-            return nextGame;
-          });
+          if (data.isOver) {
+            setIsPlayingLive(false);
+            if (soundEnabledRef.current) sounds.playVictory();
+          }
           break;
         }
 
         case 'ARENA_STREAM_MOVE': {
           zoomQueueRef.current.push(data);
+          // If zoom is disabled, update arenaLiveResults directly
+          if (!tournamentZoomEnabledRef.current && (data.currentWinsA !== undefined || data.totalGames !== undefined)) {
+            setArenaLiveResults({
+              gameIndex: data.gameIndex ?? 1,
+              totalGames: data.totalGames ?? 20,
+              winsA: data.currentWinsA ?? 0,
+              winsB: data.currentWinsB ?? 0,
+              draws: data.currentDraws ?? 0,
+              isSimulating: true,
+            });
+          }
           break;
         }
 
         case 'ARENA_RESULT': {
-          if (tournamentZoomEnabledRef.current && isZoomingTournamentRef.current) {
+          setIsTournamentPaused(false);
+          if (data.isCancelled) {
+            // Early stop: drain queue immediately and display partial results
+            zoomQueueRef.current = [];
+            pendingTournamentResultRef.current = null;
+            setIsZoomingTournament(false);
+            setTournamentResult(data);
+            setArenaLiveResults((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    winsA: data.winsA,
+                    winsB: data.winsB,
+                    draws: data.draws,
+                    gameIndex: data.gamesPlayed,
+                    isSimulating: false,
+                  }
+                : null
+            );
+            if (soundEnabledRef.current) sounds.playCapture();
+          } else if (tournamentZoomEnabledRef.current && isZoomingTournamentRef.current) {
             pendingTournamentResultRef.current = data;
           } else {
             setTournamentResult(data);
+            setArenaLiveResults((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    winsA: data.winsA,
+                    winsB: data.winsB,
+                    draws: data.draws,
+                    gameIndex: data.gamesPlayed,
+                    isSimulating: false,
+                  }
+                : null
+            );
             setIsZoomingTournament(false);
             if (soundEnabledRef.current) sounds.playVictory();
           }
@@ -497,13 +678,23 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Tournament Live Board Zoom ticker (6ms per tick with adaptive draining)
   useEffect(() => {
-    if (!isZoomingTournament) return;
+    if (!isZoomingTournament || isTournamentPaused) return;
 
     const timer = setInterval(() => {
       const qLen = zoomQueueRef.current.length;
       const batchSize = qLen > 300 ? 3 : qLen > 100 ? 2 : 1;
 
-      let lastNext: { move: Move; san: string; fen: string; isOver: boolean; gameIndex?: number } | null = null;
+      let lastNext: {
+        move: Move;
+        san: string;
+        fen: string;
+        isOver: boolean;
+        gameIndex?: number;
+        totalGames?: number;
+        currentWinsA?: number;
+        currentWinsB?: number;
+        currentDraws?: number;
+      } | null = null;
       for (let b = 0; b < batchSize; b++) {
         const item = zoomQueueRef.current.shift();
         if (item) lastNext = item;
@@ -515,6 +706,17 @@ export const IntransitiveStudio: React.FC = () => {
           currentZoomGameRef.current = lastNext.gameIndex;
           setMoveHistory([]);
           setHistoryIndex(-1);
+        }
+
+        if (lastNext.currentWinsA !== undefined || lastNext.totalGames !== undefined) {
+          setArenaLiveResults({
+            gameIndex: lastNext.gameIndex ?? 1,
+            totalGames: lastNext.totalGames ?? 20,
+            winsA: lastNext.currentWinsA ?? 0,
+            winsB: lastNext.currentWinsB ?? 0,
+            draws: lastNext.currentDraws ?? 0,
+            isSimulating: true,
+          });
         }
 
         setGame(new IntransitiveGame(lastNext.fen));
@@ -529,15 +731,35 @@ export const IntransitiveStudio: React.FC = () => {
           sounds.playCapture();
         }
       } else if (pendingTournamentResultRef.current) {
-        setTournamentResult(pendingTournamentResultRef.current);
+        const finalResult = pendingTournamentResultRef.current;
         pendingTournamentResultRef.current = null;
+        setTournamentResult(finalResult);
+        setArenaLiveResults((prev) =>
+          prev
+            ? {
+                ...prev,
+                winsA: finalResult.winsA,
+                winsB: finalResult.winsB,
+                draws: finalResult.draws,
+                gameIndex: finalResult.gamesPlayed,
+                isSimulating: false,
+              }
+            : {
+                gameIndex: finalResult.gamesPlayed,
+                totalGames: finalResult.gamesPlayed,
+                winsA: finalResult.winsA,
+                winsB: finalResult.winsB,
+                draws: finalResult.draws,
+                isSimulating: false,
+              }
+        );
         setIsZoomingTournament(false);
         if (soundEnabledRef.current) sounds.playVictory();
       }
     }, 6);
 
     return () => clearInterval(timer);
-  }, [isZoomingTournament]);
+  }, [isZoomingTournament, isTournamentPaused]);
 
   // Visual Arena Live playback loop: alternates between Fighter A (Blue) and Fighter B (Red)
   useEffect(() => {
@@ -549,12 +771,14 @@ export const IntransitiveStudio: React.FC = () => {
     timerRef.current = setTimeout(() => {
       if (workerRef.current && isPlayingLive) {
         // In Visual Arena, Blue moves using Fighter A, Red moves using Fighter B
-        const activeFighterId = game.activePlayer === PLAYER_BLUE ? fighterAId : fighterBId;
+        const isBlue = game.activePlayer === PLAYER_BLUE;
+        const activeFighterId = isBlue ? fighterAId : fighterBId;
+        const activeDepth = isBlue ? fighterADepth : fighterBDepth;
         const fighterWeights = getWeightsById(activeFighterId);
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: game.toFEN(),
-          searchDepth: arenaSearchDepth,
+          searchDepth: activeDepth,
           customWeights: fighterWeights,
         });
       }
@@ -563,10 +787,14 @@ export const IntransitiveStudio: React.FC = () => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPlayingLive, activeTab, game, delayMs, fighterAId, fighterBId, arenaSearchDepth, getWeightsById]);
+  }, [isPlayingLive, activeTab, game, delayMs, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
 
-  // Reset Game
   const handleResetGame = useCallback(() => {
+    if (analysisWorkerRef.current) {
+      analysisWorkerRef.current.terminate();
+      analysisWorkerRef.current = null;
+    }
+    setAnalysisTelemetry(null);
     setIsPlayingLive(false);
     setIsZoomingTournament(false);
     zoomQueueRef.current = [];
@@ -591,17 +819,19 @@ export const IntransitiveStudio: React.FC = () => {
     } else {
       // Ask worker for 1 live step based on current active fighter
       if (workerRef.current && !game.isTerminal().isOver) {
-        const activeFighterId = game.activePlayer === PLAYER_BLUE ? fighterAId : fighterBId;
+        const isBlue = game.activePlayer === PLAYER_BLUE;
+        const activeFighterId = isBlue ? fighterAId : fighterBId;
+        const activeDepth = isBlue ? fighterADepth : fighterBDepth;
         const watchWeights = getWeightsById(activeFighterId);
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: game.toFEN(),
-          searchDepth: arenaSearchDepth,
+          searchDepth: activeDepth,
           customWeights: watchWeights,
         });
       }
     }
-  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, arenaSearchDepth, getWeightsById]);
+  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
 
   const handleStepBackward = useCallback(() => {
     if (historyIndex > 0) {
@@ -650,27 +880,39 @@ export const IntransitiveStudio: React.FC = () => {
     const fenAfter = nextGame.toFEN();
     setGame(nextGame);
     setLastMove(move);
+    setSelectedSquare(null);
     setMoveHistory((prev) => [...prev, { move, san, fen: fenAfter }]);
     setHistoryIndex((prev) => prev + 1);
+    setAnalysisTelemetry(null);
 
-    // Trigger AI response using selected opponent's weights
+    // Cancel and immediately terminate any running background analysis worker with 0 latency
+    if (analysisWorkerRef.current) {
+      analysisWorkerRef.current.terminate();
+      analysisWorkerRef.current = null;
+    }
+
+    // Trigger AI response using selected opponent's weights and configured depth/thinkTime
     if (activeTab === 'play' && !nextGame.isTerminal().isOver) {
       const opponentWeights = getWeightsById(selectedOpponentId);
-      setTimeout(() => {
-        if (workerRef.current) {
-          workerRef.current.postMessage({
-            type: 'STEP_LIVE',
-            currentFen: fenAfter,
-            searchDepth: arenaSearchDepth,
-            customWeights: opponentWeights,
-          });
-        }
-      }, 250);
+      if (workerRef.current) {
+        workerRef.current.postMessage({
+          type: 'STEP_LIVE',
+          currentFen: fenAfter,
+          searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
+          thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
+          customWeights: opponentWeights,
+        });
+      }
     }
-  }, [game, soundEnabled, activeTab, selectedOpponentId, arenaSearchDepth, getWeightsById]);
+  }, [game, soundEnabled, activeTab, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
   // Start a fresh Human Game
   const handleStartHumanGame = useCallback((color: 'blue' | 'red', opponentId: string) => {
+    if (analysisWorkerRef.current) {
+      analysisWorkerRef.current.terminate();
+      analysisWorkerRef.current = null;
+    }
+    setAnalysisTelemetry(null);
     setHumanColor(color);
     setSelectedOpponentId(opponentId);
     setIsPlayingLive(false);
@@ -685,24 +927,28 @@ export const IntransitiveStudio: React.FC = () => {
     if (color === 'red') {
       setIsBoardFlipped(true);
       // AI plays first as Blue
-      setTimeout(() => {
-        if (workerRef.current) {
-          const opponentWeights = getWeightsById(opponentId);
-          workerRef.current.postMessage({
-            type: 'STEP_LIVE',
-            currentFen: freshGame.toFEN(),
-            searchDepth: arenaSearchDepth,
-            customWeights: opponentWeights,
-          });
-        }
-      }, 350);
+      if (workerRef.current) {
+        const opponentWeights = getWeightsById(opponentId);
+        workerRef.current.postMessage({
+          type: 'STEP_LIVE',
+          currentFen: freshGame.toFEN(),
+          searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
+          thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
+          customWeights: opponentWeights,
+        });
+      }
     } else {
       setIsBoardFlipped(false);
     }
-  }, [arenaSearchDepth, getWeightsById]);
+  }, [playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
   // Undo in Human Play (steps back 2 plies to human's turn)
   const handleUndoHumanMove = useCallback(() => {
+    if (analysisWorkerRef.current) {
+      analysisWorkerRef.current.terminate();
+      analysisWorkerRef.current = null;
+    }
+    setAnalysisTelemetry(null);
     if (historyIndex >= 1) {
       const targetIndex = historyIndex - 2 >= 0 ? historyIndex - 2 : -1;
       handleSelectHistoryIndex(targetIndex);
@@ -812,8 +1058,26 @@ export const IntransitiveStudio: React.FC = () => {
   }, [selectedBaselineId, stats, checkpoints]);
 
   // Arena Actions
-  const handleRunTournament = useCallback((cpA: Checkpoint, cpB: Checkpoint, games: number, depth: number = arenaSearchDepth) => {
+  const handleRunTournament = useCallback((
+    cpA: Checkpoint,
+    cpB: Checkpoint,
+    games: number,
+    depthA: number = fighterADepth,
+    depthB: number = fighterBDepth,
+    thinkTimeSecA?: number,
+    thinkTimeSecB?: number
+  ) => {
     setTournamentResult(null);
+    setIsTournamentPaused(false);
+    setArenaLiveResults({
+      gameIndex: 1,
+      totalGames: games,
+      winsA: 0,
+      winsB: 0,
+      draws: 0,
+      isSimulating: true,
+    });
+    setArenaViewMode('realtime');
     if (tournamentZoomEnabled) {
       handleResetGame();
       currentZoomGameRef.current = 1;
@@ -827,11 +1091,34 @@ export const IntransitiveStudio: React.FC = () => {
         checkpointA: cpA,
         checkpointB: cpB,
         numGames: games,
-        searchDepth: depth,
+        searchDepthA: depthA,
+        searchDepthB: depthB,
+        thinkTimeSecA,
+        thinkTimeSecB,
         streamMoves: tournamentZoomEnabled,
       });
     }
-  }, [tournamentZoomEnabled, arenaSearchDepth, handleResetGame]);
+  }, [tournamentZoomEnabled, fighterADepth, fighterBDepth, handleResetGame]);
+
+  const handlePauseTournament = useCallback(() => {
+    setIsTournamentPaused(true);
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: 'ARENA_PAUSE' });
+    }
+  }, []);
+
+  const handleResumeTournament = useCallback(() => {
+    setIsTournamentPaused(false);
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: 'ARENA_RESUME' });
+    }
+  }, []);
+
+  const handleStopTournament = useCallback(() => {
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: 'ARENA_STOP' });
+    }
+  }, []);
 
   const handleExportJSON = useCallback(() => {
     const json = exportCheckpointsJSON();
@@ -846,6 +1133,13 @@ export const IntransitiveStudio: React.FC = () => {
 
   const handleImportJSON = useCallback((jsonStr: string) => {
     const ok = importCheckpointsJSON(jsonStr);
+    if (ok) {
+      setCheckpoints(getStoredCheckpoints());
+    }
+  }, []);
+
+  const handleRenameCheckpoint = useCallback((id: string, newName: string) => {
+    const ok = renameCheckpoint(id, newName);
     if (ok) {
       setCheckpoints(getStoredCheckpoints());
     }
@@ -873,18 +1167,12 @@ export const IntransitiveStudio: React.FC = () => {
     }
   }, []);
 
-  const currentStatus = game.isTerminal();
   const evalScore = useMemo(() => {
     if (candidateMoves.length > 0) {
       return candidateMoves[0].score;
     }
     return evaluate(game, activeEvalModel.weights);
   }, [candidateMoves, game, activeEvalModel]);
-
-  const isHumanTurn =
-    activeTab === 'play' &&
-    !currentStatus.isOver &&
-    game.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED);
 
   return (
     <div className="intransitive-studio-root">
@@ -987,6 +1275,89 @@ export const IntransitiveStudio: React.FC = () => {
                       </option>
                     ))}
                 </select>
+              </div>
+
+              {/* Opponent Engine Search Mode: Mutually Exclusive [ Depth | Time ] */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                <div className="intransitive-segmented-switch">
+                  <button
+                    type="button"
+                    onClick={() => setPlayOpponentMode('depth')}
+                    className={`intransitive-segmented-btn ${playOpponentMode === 'depth' ? 'active' : ''}`}
+                    title="Fixed search depth (D1-D6)"
+                  >
+                    <Target size={11} /> Depth
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPlayOpponentMode('time')}
+                    className={`intransitive-segmented-btn ${playOpponentMode === 'time' ? 'active' : ''}`}
+                    title="Allotted thinking time per move"
+                  >
+                    <Clock size={11} /> Time
+                  </button>
+                </div>
+
+                {playOpponentMode === 'depth' ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                    <input
+                      type="range"
+                      min="1"
+                      max="6"
+                      step="1"
+                      value={playOpponentDepth}
+                      onChange={(e) => setPlayOpponentDepth(parseInt(e.target.value, 10))}
+                      className="intransitive-range-slider"
+                      style={{ width: '80px' }}
+                      title={`Opponent search depth: D${playOpponentDepth}`}
+                    />
+                    <span
+                      style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 800,
+                        fontFamily: "'JetBrains Mono', monospace",
+                        color: '#ea580c',
+                        background: '#fff7ed',
+                        padding: '0.1rem 0.35rem',
+                        borderRadius: '4px',
+                        border: '1px solid #fed7aa',
+                        minWidth: '26px',
+                        textAlign: 'center',
+                      }}
+                      title={`Depth ${playOpponentDepth}`}
+                    >
+                      D{playOpponentDepth}
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="30"
+                      step="0.5"
+                      value={playOpponentTimeSec}
+                      onChange={(e) => setPlayOpponentTimeSec(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
+                      className="intransitive-input-number warm"
+                      style={{ width: '52px', padding: '0.15rem 0.35rem', fontSize: '0.72rem' }}
+                      title="Opponent thinking time per move (seconds)"
+                    />
+                    <span style={{ fontSize: '0.7rem', color: '#6b635b' }}>s</span>
+                    <div className="intransitive-mini-btn-group">
+                      {[0.5, 1.0, 2.0].map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setPlayOpponentTimeSec(s)}
+                          className={`intransitive-mini-btn ${playOpponentTimeSec === s ? 'active' : ''}`}
+                          style={{ padding: '0.15rem 0.35rem', fontSize: '0.65rem' }}
+                        >
+                          {s}s
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -1100,6 +1471,26 @@ export const IntransitiveStudio: React.FC = () => {
                 )}
               </select>
 
+              {checkpoints.some((c) => c.id === selectedBaselineId && !c.id.startsWith('preset-')) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const activeCp = checkpoints.find((c) => c.id === selectedBaselineId);
+                    if (activeCp) {
+                      const newName = window.prompt(`Rename model "${activeCp.name}":`, activeCp.name);
+                      if (newName && newName.trim()) {
+                        handleRenameCheckpoint(activeCp.id, newName.trim());
+                      }
+                    }
+                  }}
+                  className="intransitive-icon-btn"
+                  style={{ width: '22px', height: '22px', color: '#4f46e5' }}
+                  title="Rename selected baseline model"
+                >
+                  <Edit3 size={12} />
+                </button>
+              )}
+
               <div className="intransitive-header-save-group">
                 <input
                   type="text"
@@ -1166,6 +1557,7 @@ export const IntransitiveStudio: React.FC = () => {
           onExportJSON={handleExportJSON}
           onImportJSON={handleImportJSON}
           onDeleteCheckpoint={handleDeleteCheckpoint}
+          onRenameCheckpoint={handleRenameCheckpoint}
           onClearAllCheckpoints={handleClearAllCheckpoints}
           onResetSettings={() => {
             localStorage.removeItem(SETTINGS_KEY);
@@ -1176,6 +1568,15 @@ export const IntransitiveStudio: React.FC = () => {
             setAnalysisMaxRows(3);
             setTournamentZoomEnabled(true);
             setArenaSearchDepth(2);
+            setFighterADepth(2);
+            setFighterBDepth(2);
+            setFighterAMode('depth');
+            setFighterBMode('depth');
+            setFighterATimeSec(1.0);
+            setFighterBTimeSec(1.0);
+            setPlayOpponentMode('depth');
+            setPlayOpponentDepth(2);
+            setPlayOpponentTimeSec(1.0);
             setTrainingSearchDepth(1);
             setLearningRateAnnealing(true);
             setSoundEnabled(true);
@@ -1222,7 +1623,9 @@ export const IntransitiveStudio: React.FC = () => {
                     : activeTab === 'play'
                     ? isHumanTurn
                       ? `Your Turn (${humanColor === 'blue' ? 'Blue' : 'Red'})`
-                      : `Computer is thinking...`
+                      : playOpponentMode === 'time'
+                      ? `Computer is thinking (${playOpponentTimeSec}s)...`
+                      : `Computer is thinking (Depth ${playOpponentDepth})...`
                     : `${game.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'} to move (Ply ${game.halfmoveClock + 1})`}
                 </span>
               </div>
@@ -1366,21 +1769,81 @@ export const IntransitiveStudio: React.FC = () => {
                     handleResetGame();
                   }}
                   onRunTournament={handleRunTournament}
-                  searchDepth={arenaSearchDepth}
-                  onChangeSearchDepth={setArenaSearchDepth}
+                  fighterADepth={fighterADepth}
+                  fighterBDepth={fighterBDepth}
+                  onChangeFighterADepth={setFighterADepth}
+                  onChangeFighterBDepth={setFighterBDepth}
+                  fighterAMode={fighterAMode}
+                  fighterBMode={fighterBMode}
+                  onChangeFighterAMode={setFighterAMode}
+                  onChangeFighterBMode={setFighterBMode}
+                  fighterATimeSec={fighterATimeSec}
+                  fighterBTimeSec={fighterBTimeSec}
+                  onChangeFighterATimeSec={setFighterATimeSec}
+                  onChangeFighterBTimeSec={setFighterBTimeSec}
+                  isPaused={isTournamentPaused}
+                  onPauseTournament={handlePauseTournament}
+                  onResumeTournament={handleResumeTournament}
+                  onStopTournament={handleStopTournament}
                   onExportJSON={handleExportJSON}
                   onImportJSON={handleImportJSON}
                   tournamentResult={tournamentResult}
-                  isSimulating={isZoomingTournament}
+                  isSimulating={isZoomingTournament || Boolean(arenaLiveResults?.isSimulating)}
                   isZoomEnabled={tournamentZoomEnabled}
                   onToggleZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
                 />
 
-                <MoveListSection
-                  moves={moveHistory}
-                  currentIndex={historyIndex}
-                  onSelectIndex={handleSelectHistoryIndex}
-                />
+                {(isZoomingTournament || arenaLiveResults?.isSimulating || (arenaLiveResults && arenaViewMode === 'realtime')) && arenaViewMode === 'realtime' ? (
+                  <ArenaRealtimeResultsCard
+                    isSimulating={Boolean(isZoomingTournament || arenaLiveResults?.isSimulating)}
+                    isPaused={isTournamentPaused}
+                    onPause={handlePauseTournament}
+                    onResume={handleResumeTournament}
+                    onStop={handleStopTournament}
+                    gameIndex={arenaLiveResults?.gameIndex ?? 1}
+                    totalGames={arenaLiveResults?.totalGames ?? 20}
+                    winsA={arenaLiveResults?.winsA ?? 0}
+                    winsB={arenaLiveResults?.winsB ?? 0}
+                    draws={arenaLiveResults?.draws ?? 0}
+                    fighterAName={checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
+                    fighterBName={checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
+                    fighterADepth={fighterADepth}
+                    fighterBDepth={fighterBDepth}
+                    fighterAMode={fighterAMode}
+                    fighterBMode={fighterBMode}
+                    fighterATimeSec={fighterATimeSec}
+                    fighterBTimeSec={fighterBTimeSec}
+                    currentPly={moveHistory.length}
+                    lastSan={lastMove ? game.formatMoveSAN(lastMove) : ''}
+                    onToggleView={() => setArenaViewMode('notation')}
+                  />
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    {arenaLiveResults && (
+                      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          onClick={() => setArenaViewMode('realtime')}
+                          className="intransitive-mini-btn"
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.3rem',
+                            fontSize: '0.69rem',
+                            padding: '0.2rem 0.55rem',
+                          }}
+                        >
+                          <Activity size={12} color="#ea580c" /> Show Real-time Results
+                        </button>
+                      </div>
+                    )}
+                    <MoveListSection
+                      moves={moveHistory}
+                      currentIndex={historyIndex}
+                      onSelectIndex={handleSelectHistoryIndex}
+                    />
+                  </div>
+                )}
               </>
             )}
 

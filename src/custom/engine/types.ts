@@ -11,6 +11,7 @@ export interface EvaluationWeights {
     S: number;
   };
   goalDistanceWeight: number;
+  runnerWeight?: number;
   threatBonus: number;
   vulnerabilityPenalty: number;
   tempoBonus: number;
@@ -83,6 +84,7 @@ export interface StateFeatures {
   materialP: number; // (Blue P - Red P)
   materialS: number; // (Blue S - Red S)
   goalDistanceAdvantage: number; // (Blue goal proximity - Red goal proximity)
+  runnerAdvantage: number; // (Blue runner threat - Red runner threat)
   threatAdvantage: number; // (Blue threats - Red threats)
   vulnerabilityAdvantage: number; // (Red vulnerabilities - Blue vulnerabilities)
   tempoAdvantage: number; // +1 if Blue turn, -1 if Red turn
@@ -108,8 +110,29 @@ export interface AnalysisTelemetry {
 export type WorkerRequest =
   | { type: 'START_TURBO'; totalGames: number; config?: Partial<TrainingConfig> }
   | { type: 'STOP_TURBO' }
-  | { type: 'STEP_LIVE'; currentFen?: string; searchDepth?: number; config?: Partial<TrainingConfig>; customWeights?: EvaluationWeights }
-  | { type: 'ARENA_RUN'; checkpointA: Checkpoint; checkpointB: Checkpoint; numGames: number; searchDepth?: number; streamMoves?: boolean }
+  | {
+      type: 'STEP_LIVE';
+      currentFen?: string;
+      searchDepth?: number;
+      thinkTimeSec?: number;
+      config?: Partial<TrainingConfig>;
+      customWeights?: EvaluationWeights;
+    }
+  | {
+      type: 'ARENA_RUN';
+      checkpointA: Checkpoint;
+      checkpointB: Checkpoint;
+      numGames: number;
+      searchDepth?: number;
+      searchDepthA?: number;
+      searchDepthB?: number;
+      thinkTimeSecA?: number;
+      thinkTimeSecB?: number;
+      streamMoves?: boolean;
+    }
+  | { type: 'ARENA_PAUSE' }
+  | { type: 'ARENA_RESUME' }
+  | { type: 'ARENA_STOP' }
   | { type: 'START_ANALYSIS'; currentFen: string; weights?: EvaluationWeights; maxDepth?: number; count?: number }
   | { type: 'STOP_ANALYSIS' }
   | { type: 'SET_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
@@ -166,6 +189,10 @@ export type WorkerResponse =
       fen: string;
       isOver: boolean;
       gameIndex: number;
+      totalGames?: number;
+      currentWinsA?: number;
+      currentWinsB?: number;
+      currentDraws?: number;
     }
   | {
       type: 'ARENA_RESULT';
@@ -179,6 +206,11 @@ export type WorkerResponse =
       avgGameLength?: number;
       accuracyA?: number;
       accuracyB?: number;
+      depthA?: number;
+      depthB?: number;
+      thinkTimeSecA?: number;
+      thinkTimeSecB?: number;
+      isCancelled?: boolean;
     }
   | {
       type: 'CURRENT_STATE';

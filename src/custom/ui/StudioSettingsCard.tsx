@@ -4,7 +4,7 @@
  * tournament fast zoom options, and persistent preferences.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Settings,
   BrainCircuit,
@@ -19,6 +19,9 @@ import {
   Zap,
   Trash2,
   Cpu,
+  Edit3,
+  Check,
+  X,
 } from 'lucide-react';
 import type { Checkpoint } from '../engine/types';
 
@@ -51,6 +54,7 @@ interface StudioSettingsCardProps {
   onImportJSON: (json: string) => void;
   onResetSettings: () => void;
   onDeleteCheckpoint?: (id: string) => void;
+  onRenameCheckpoint?: (id: string, newName: string) => void;
   onClearAllCheckpoints?: () => void;
 }
 
@@ -83,8 +87,31 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
   onImportJSON,
   onResetSettings,
   onDeleteCheckpoint,
+  onRenameCheckpoint,
   onClearAllCheckpoints,
 }) => {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string>('');
+
+  const handleStartRename = (id: string, currentName: string) => {
+    setEditingId(id);
+    setEditingName(currentName);
+  };
+
+  const handleSaveRename = (id: string) => {
+    const trimmed = editingName.trim();
+    if (trimmed && onRenameCheckpoint) {
+      onRenameCheckpoint(id, trimmed);
+    }
+    setEditingId(null);
+    setEditingName('');
+  };
+
+  const handleCancelRename = () => {
+    setEditingId(null);
+    setEditingName('');
+  };
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -490,30 +517,81 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                           borderRadius: '6px',
                           border: '1px solid #eee8de',
                           fontSize: '0.72rem',
+                          gap: '0.4rem',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', overflow: 'hidden' }}>
-                          <span style={{ fontWeight: 700, color: '#2b2520', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                            💾 {cp.name}
-                          </span>
-                          <span style={{ color: '#8c827a', fontSize: '0.68rem' }}>
-                            (Gen {cp.generation})
-                          </span>
-                        </div>
-                        {onDeleteCheckpoint && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (window.confirm(`Delete checkpoint "${cp.name}"?`)) {
-                                onDeleteCheckpoint(cp.id);
-                              }
-                            }}
-                            className="intransitive-icon-btn"
-                            style={{ color: '#b91c1c', width: '22px', height: '22px' }}
-                            title={`Delete ${cp.name}`}
-                          >
-                            <Trash2 size={12} />
-                          </button>
+                        {editingId === cp.id ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flex: 1 }}>
+                            <input
+                              type="text"
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveRename(cp.id);
+                                if (e.key === 'Escape') handleCancelRename();
+                              }}
+                              autoFocus
+                              className="intransitive-header-snapshot-input"
+                              style={{ height: '26px', fontSize: '0.72rem', padding: '0.1rem 0.45rem', flex: 1 }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveRename(cp.id)}
+                              className="intransitive-icon-btn"
+                              style={{ color: '#059669', width: '22px', height: '22px' }}
+                              title="Save name"
+                            >
+                              <Check size={12} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleCancelRename}
+                              className="intransitive-icon-btn"
+                              style={{ color: '#6b635b', width: '22px', height: '22px' }}
+                              title="Cancel"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', overflow: 'hidden', flex: 1 }}>
+                              <span style={{ fontWeight: 700, color: '#2b2520', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                💾 {cp.name}
+                              </span>
+                              <span style={{ color: '#8c827a', fontSize: '0.68rem', flexShrink: 0 }}>
+                                (Gen {cp.generation})
+                              </span>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
+                              {onRenameCheckpoint && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleStartRename(cp.id, cp.name)}
+                                  className="intransitive-icon-btn"
+                                  style={{ color: '#4f46e5', width: '22px', height: '22px' }}
+                                  title={`Rename ${cp.name}`}
+                                >
+                                  <Edit3 size={12} />
+                                </button>
+                              )}
+                              {onDeleteCheckpoint && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (window.confirm(`Delete checkpoint "${cp.name}"?`)) {
+                                      onDeleteCheckpoint(cp.id);
+                                    }
+                                  }}
+                                  className="intransitive-icon-btn"
+                                  style={{ color: '#b91c1c', width: '22px', height: '22px' }}
+                                  title={`Delete ${cp.name}`}
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          </>
                         )}
                       </div>
                     ))}

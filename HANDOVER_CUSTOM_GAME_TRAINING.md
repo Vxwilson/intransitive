@@ -72,9 +72,12 @@ src/custom/
 
 ## 4. Reinforcement Learning Architecture
 
-- **Tabula Rasa**: Starts with all weights at 0.0 ($w_R = 0.0, w_P = 0.0, w_S = 0.0, w_{\text{goal}} = 0.0$).
+- **Tabula Rasa**: Starts with all weights at 0.0 ($w_R = 0.0, w_P = 0.0, w_S = 0.0, w_{\text{goal}} = 0.0, w_{\text{runner}} = 0.0$).
 - **State Value Function**:
-  $$V(s) = \sum_{p \in \{R,P,S\}} w_p \cdot \Delta p + w_{\text{goal}} \cdot \Delta \text{Goal} + w_{\text{threat}} \cdot \Delta \text{Threat} + w_{\text{vuln}} \cdot \Delta \text{Vuln} + \sum_{sq} \Delta \text{PST}(sq)$$
+  $$V(s) = \sum_{p \in \{R,P,S\}} w_p \cdot \Delta p + w_{\text{goal}} \cdot \Delta \text{Goal} + w_{\text{runner}} \cdot \Delta \text{Runner} + w_{\text{threat}} \cdot \Delta \text{Threat} + w_{\text{vuln}} \cdot \Delta \text{Vuln} + \sum_{sq} \Delta \text{PST}(sq)$$
+- **Chebyshev Geometry & Unstoppable Runner Engine**:
+  - Distance to goals is calculated using **8-directional Chebyshev distance**: $D(s_1, s_2) = \max(|f_1 - f_2|, |r_1 - r_2|)$.
+  - **Unstoppable Runner Detection ("Rule of the Goal")**: For any friendly piece with distance $D \le 3$ to goal, the engine evaluates whether any opposing predator can intercept it before touchdown ($D_{\text{predator}} \le D$). Uncatchable runners receive decisive tactical scoring (+4000 cp for $D=1$, +1500 cp for $D=2$, +600 cp for $D=3$), preventing horizon effect blunders and converting forced wins.
 - **TD-Leaf($\lambda$)**:
   $$\delta_t = V(s_{t+1}) - V(s_t), \quad \delta_{T-1} = z - V(s_{T-1})$$
   $$E_t = \delta_t + \lambda \cdot E_{t+1}, \quad \Delta w_k = \frac{\alpha}{\sqrt{T}} \sum_{t=0}^{T-1} E_t \cdot f_k(s_t)$$
@@ -89,8 +92,8 @@ src/custom/
   - A rolling buffer of deep-cloned weights is preserved every 50 generations (up to 12 models).
   - Opponents are mixed probabilistically: **65% Self-Play**, **20% Historical League Checkpoint**, **15% Heuristic Benchmark Anchor**.
 - **Goal Anchor Floor & Parameter Safeguards**:
-  - **Goal Floor ($\ge 10.0$)**: Prevents catastrophic touchdown decay where drawn/counterattacked games previously drove $w_{\text{goal}} \to 0$.
-  - **Goal Gradient Normalization ($0.1\times$)**: Multi-piece distance sums are scaled to balance with single-piece material features.
+  - **Goal & Runner Floors ($\ge 10.0$ / $\ge 5.0$)**: Prevents catastrophic touchdown decay where drawn/counterattacked games previously drove touchdown weights to zero.
+  - **Goal Gradient Normalization ($0.15\times$)**: Multi-piece Chebyshev distance sums are scaled to balance with single-piece material features.
   - **Piece & Tactical Floors**: Minimum floor of $5.0$ on piece values and $2.0$ on threat/vulnerability penalties ensures pieces remain valuable tactical assets throughout thousands of self-play games.
 
 ### 4.1 Empirical Training Dynamics & Benchmarks
@@ -186,6 +189,6 @@ npm run dev
 For the next developer or LLM continuing work on Chessesque:
 1. **PGN/Replay Export for Intransitive**: Export games in a standardized custom PGN format, with copy-to-clipboard or file download.
 2. **Round-Robin Tournament Mode**: An automated tournament manager that pits all saved checkpoints against each other in a round-robin league table with live Elo calculation.
-3. **MCTS / Policy Network Comparison**: Implement a simple neural network or Monte Carlo Tree Search agent to compare with TD-Leaf.
+3. **NNUE Architecture Leap**: Implement the compact 66k-parameter browser-native NNUE engine (detailed architecture and transition roadmap documented in [INTRANSITIVE_NNUE_PLAN.md](file:///Volumes/SN770%20BLACK/Documents/Coding/antigravity/chessesque/INTRANSITIVE_NNUE_PLAN.md)).
 4. **Custom Board Setup & Handicap Mode**: Allow players to place custom initial piece configurations or play with piece handicaps.
 5. **Interactive Replay Analyzer**: Add an engine analysis graph (eval over time) to the move list section in human play and arena games.

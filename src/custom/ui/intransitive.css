@@ -952,7 +952,7 @@ body.theme-intransitive-warm {
 
 .intransitive-weights-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.5rem;
   text-align: center;
 }
@@ -971,6 +971,7 @@ body.theme-intransitive-warm {
 .intransitive-weight-cell.paper { border-top: 3px solid #059669; }
 .intransitive-weight-cell.scissors { border-top: 3px solid #dc2626; }
 .intransitive-weight-cell.goal { border-top: 3px solid #2563eb; }
+.intransitive-weight-cell.runner { border-top: 3px solid #7c3aed; }
 
 .intransitive-weight-cell-label {
   font-size: 0.65rem;
@@ -2020,6 +2021,192 @@ body.theme-intransitive-warm {
   font-family: 'JetBrains Mono', monospace;
 }
 
+/* ==========================================================================
+   Depth Sliders, Thinking Time & Tournament Controls
+   ========================================================================== */
 
+/* Segmented Control Switch [ Depth | Time ] */
+.intransitive-segmented-switch {
+  display: inline-flex;
+  align-items: center;
+  background: #ede7dc;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid #d9cfc2;
+  gap: 2px;
+}
 
+.intransitive-segmented-btn {
+  border: none;
+  background: transparent;
+  color: #786f66;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.18rem 0.45rem;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.intransitive-segmented-btn:hover {
+  color: #2b2520;
+}
+
+.intransitive-segmented-btn.active {
+  background: #ffffff;
+  color: #2b2520;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* Range Slider Styling */
+.intransitive-range-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  background: #e5ddd0;
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.intransitive-range-slider:hover {
+  background: #d8cebf;
+}
+
+.intransitive-range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ea580c;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.intransitive-range-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.18);
+}
+
+.intransitive-range-slider.blue::-webkit-slider-thumb {
+  background: #2563eb;
+}
+
+.intransitive-range-slider.red::-webkit-slider-thumb {
+  background: #ea580c;
+}
+
+.intransitive-range-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ea580c;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+/* Slider Tick Indicators */
+.intransitive-slider-ticks {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 2px;
+  font-size: 0.62rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: #9c9184;
+}
+
+/* Paused / Live Status Badges */
+.intransitive-badge-paused {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.66rem;
+  font-weight: 800;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  letter-spacing: 0.02em;
+  animation: pulse-paused 2s infinite ease-in-out;
+}
+
+@keyframes pulse-paused {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
+}
+
+.intransitive-badge-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #059669;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.intransitive-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 4px #10b981;
+}
+
+/* Tournament Control Button States */
+.intransitive-mini-btn.warn,
+.intransitive-btn-secondary.warn {
+  background: #fffbeb !important;
+  color: #b45309 !important;
+  border-color: #fde68a !important;
+}
+
+.intransitive-mini-btn.warn:hover,
+.intransitive-btn-secondary.warn:hover {
+  background: #fef3c7 !important;
+  color: #92400e !important;
+  border-color: #fcd34d !important;
+}
+
+.intransitive-mini-btn.success,
+.intransitive-btn-primary.success {
+  background: #10b981 !important;
+  color: #ffffff !important;
+  border-color: #059669 !important;
+}
+
+.intransitive-mini-btn.success:hover,
+.intransitive-btn-primary.success:hover {
+  background: #059669 !important;
+}
+
+.intransitive-mini-btn.danger,
+.intransitive-btn-secondary.danger {
+  background: #fef2f2 !important;
+  color: #b91c1c !important;
+  border-color: #fecaca !important;
+}
+
+.intransitive-mini-btn.danger:hover,
+.intransitive-btn-secondary.danger:hover {
+  background: #fee2e2 !important;
+  color: #991b1b !important;
+  border-color: #fca5a5 !important;
+}
 
