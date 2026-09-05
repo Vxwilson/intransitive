@@ -5,6 +5,9 @@
 
 import { IntransitiveGame } from '../core/game';
 import { getTopMoves } from './search';
+import { deserializeWeights } from './nnue/featureTransformer';
+import { createHeuristicWeights } from './evaluator';
+import type { NNUEWeights } from './nnue/types';
 import type {
   WorkerRequest,
   WorkerResponse,
@@ -28,9 +31,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         const thisId = currentAnalysisId;
         const targetFen = req.currentFen;
         const game = new IntransitiveGame(targetFen);
-        const weights = req.weights;
-        if (!weights) return;
-        const activeWeights: EvaluationWeights = weights;
+        const activeWeights: EvaluationWeights | NNUEWeights = req.nnueWeights
+          ? deserializeWeights(req.nnueWeights)
+          : (req.weights ?? createHeuristicWeights());
 
         const isInfinite = (req.maxDepth ?? 6) >= 99;
         // Cap deep infinite analysis at Depth 6 (~45s limit) to ensure responsive worker turnaround

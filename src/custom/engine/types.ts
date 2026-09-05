@@ -3,6 +3,7 @@
  */
 
 import type { Player, Move } from '../core/types';
+import type { SerializedNNUEWeights } from './nnue/types';
 
 export interface EvaluationWeights {
   pieceValues: {
@@ -38,6 +39,7 @@ export interface GenerationPoint {
   P: number;
   S: number;
   blueWinRate: number;
+  loss?: number;
 }
 
 export interface TrainingStats {
@@ -56,6 +58,7 @@ export interface TrainingStats {
   shortestGamePlies?: number;
   longestGamePlies?: number;
   currentAlpha?: number;
+  currentLoss?: number;
 }
 
 export interface RankedMove {
@@ -74,7 +77,9 @@ export interface Checkpoint {
   name: string;
   generation: number;
   timestamp: number;
-  weights: EvaluationWeights;
+  modelType?: 'linear' | 'nnue';
+  weights?: EvaluationWeights;
+  nnueWeights?: SerializedNNUEWeights;
   stats: TrainingStats;
 }
 
@@ -111,12 +116,21 @@ export type WorkerRequest =
   | { type: 'START_TURBO'; totalGames: number; config?: Partial<TrainingConfig> }
   | { type: 'STOP_TURBO' }
   | {
+      type: 'START_NNUE_TRAIN';
+      totalGames: number;
+      batchSize?: number;
+      learningRate?: number;
+      searchDepth?: number;
+    }
+  | { type: 'STOP_NNUE_TRAIN' }
+  | {
       type: 'STEP_LIVE';
       currentFen?: string;
       searchDepth?: number;
       thinkTimeSec?: number;
       config?: Partial<TrainingConfig>;
       customWeights?: EvaluationWeights;
+      customNNUEWeights?: SerializedNNUEWeights;
     }
   | {
       type: 'ARENA_RUN';
@@ -133,7 +147,14 @@ export type WorkerRequest =
   | { type: 'ARENA_PAUSE' }
   | { type: 'ARENA_RESUME' }
   | { type: 'ARENA_STOP' }
-  | { type: 'START_ANALYSIS'; currentFen: string; weights?: EvaluationWeights; maxDepth?: number; count?: number }
+  | {
+      type: 'START_ANALYSIS';
+      currentFen: string;
+      weights?: EvaluationWeights;
+      nnueWeights?: SerializedNNUEWeights;
+      maxDepth?: number;
+      count?: number;
+    }
   | { type: 'STOP_ANALYSIS' }
   | { type: 'SET_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
   | { type: 'SYNC_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
@@ -152,6 +173,21 @@ export type WorkerResponse =
       type: 'TURBO_COMPLETE';
       stats: TrainingStats;
       weights: EvaluationWeights;
+    }
+  | {
+      type: 'NNUE_TRAIN_PROGRESS';
+      completed: number;
+      total: number;
+      loss: number;
+      nps: number;
+      bufferSize: number;
+      stats: TrainingStats;
+      nnueWeights: SerializedNNUEWeights;
+    }
+  | {
+      type: 'NNUE_TRAIN_COMPLETE';
+      stats: TrainingStats;
+      nnueWeights: SerializedNNUEWeights;
     }
   | {
       type: 'ANALYSIS_PROGRESS';
@@ -212,6 +248,13 @@ export type WorkerResponse =
       thinkTimeSecA?: number;
       thinkTimeSecB?: number;
       isCancelled?: boolean;
+      completedGames?: {
+        gameNumber: number;
+        fighterAIsBlue: boolean;
+        result: string;
+        termination: string;
+        moves: { san: string }[];
+      }[];
     }
   | {
       type: 'CURRENT_STATE';

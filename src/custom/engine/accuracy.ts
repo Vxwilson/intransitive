@@ -8,7 +8,8 @@ import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import type { Move, Player } from '../core/types';
 import type { EvaluationWeights } from './types';
-import { evaluate } from './evaluator';
+import type { NNUEWeights } from './nnue/types';
+import { evaluateAny } from './search';
 
 export type MoveClassification = 'best' | 'inaccuracy' | 'mistake' | 'blunder';
 
@@ -89,7 +90,7 @@ export function classifyMove(cpl: number): MoveClassification {
  */
 export function analyzeGameAccuracy(
   moves: HistoryItem[],
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   winner?: Player | 'draw' | null,
   reason?: string | null
 ): GameAnalysisResult {
@@ -98,7 +99,7 @@ export function analyzeGameAccuracy(
 
   // Evaluate initial position (Ply 0)
   const initialGame = new IntransitiveGame();
-  const initialEval = evaluate(initialGame, weights);
+  const initialEval = evaluateAny(initialGame, weights);
   const clampedInitial = Math.max(-1000, Math.min(1000, initialEval));
   evalPoints.push({ ply: 0, eval: clampedInitial });
 
@@ -131,7 +132,7 @@ export function analyzeGameAccuracy(
 
     // Evaluate position after move
     const g = new IntransitiveGame(item.fen);
-    let evalRaw = evaluate(g, weights);
+    let evalRaw = evaluateAny(g, weights);
 
     // If final terminal ply, reflect decisive terminal score
     const isLastPly = i === N - 1;

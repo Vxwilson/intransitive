@@ -9,6 +9,28 @@ import { BLUE_GOAL_SQUARE, RED_GOAL_SQUARE } from '../core/constants';
 import type { IntransitiveGame } from '../core/game';
 import type { EvaluationWeights, RankedMove } from './types';
 import { evaluate, WIN_SCORE, LOSS_SCORE, DRAW_SCORE } from './evaluator';
+import { evaluateNNUE } from './nnue/nnueEvaluator';
+import type { NNUEWeights } from './nnue/types';
+import { globalIntransitiveTT, TTFlag } from './transposition';
+
+import {
+  findUnstoppableRunway,
+  evaluateRunwayRace,
+  type UnstoppableRunway,
+} from './runway';
+
+export { findUnstoppableRunway, evaluateRunwayRace, type UnstoppableRunway };
+
+export function isNNUEWeights(w: EvaluationWeights | NNUEWeights): w is NNUEWeights {
+  return typeof w === 'object' && w !== null && 'w0' in w;
+}
+
+export function evaluateAny(game: IntransitiveGame, weights: EvaluationWeights | NNUEWeights): number {
+  if (isNNUEWeights(weights)) {
+    return evaluateNNUE(game, weights);
+  }
+  return evaluate(game, weights);
+}
 
 export interface SearchResult {
   bestMove: Move | null;
@@ -48,12 +70,37 @@ export function goalChebyshevDist(sq: number, goalSq: number): number {
 }
 
 /**
- * Orders moves tactically: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity.
+ * Checks whether either player has an immediate touchdown threat (runner at distance 1).
  */
-export function orderMovesTactically(moves: Move[], activePlayer: typeof PLAYER_BLUE | typeof PLAYER_RED): void {
+export function hasRunnerThreat(game: IntransitiveGame): boolean {
+  for (let sq = 0; sq < 81; sq++) {
+    const code = game.board[sq];
+    if (code === 0) continue;
+    // Blue pieces: code 1..3, Red pieces: code 9..11 (high bit set)
+    const isBlue = code <= 3;
+    const goalSq = isBlue ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
+    if (goalChebyshevDist(sq, goalSq) === 1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Orders moves tactically: prioritize TT best move, touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity.
+ */
+export function orderMovesTactically(
+  moves: Move[],
+  activePlayer: typeof PLAYER_BLUE | typeof PLAYER_RED,
+  ttMove?: Move | null
+): void {
   if (moves.length <= 1) return;
   const goalSquare = activePlayer === PLAYER_BLUE ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
   moves.sort((a, b) => {
+    if (ttMove) {
+      if (a.from === ttMove.from && a.to === ttMove.to) return -1;
+      if (b.from === ttMove.from && b.to === ttMove.to) return 1;
+    }
     const aGoal = a.to === goalSquare ? 20000 : 0;
     const bGoal = b.to === goalSquare ? 20000 : 0;
     if (aGoal !== bGoal) return bGoal - aGoal;
@@ -80,7 +127,7 @@ export function orderMovesTactically(moves: Move[], activePlayer: typeof PLAYER_
 }
 
 /**
- * Minimax search with Alpha-Beta pruning and mate-distance scoring.
+ * Minimax search with Alpha-Beta pruning, Transposition Table, Touchdown Threat Extensions, and mate-distance scoring.
  * Score is always evaluated from Blue's perspective (positive = Blue advantage).
  */
 export function minimax(
@@ -88,27 +135,62 @@ export function minimax(
   depth: number,
   alpha: number,
   beta: number,
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   ply: number = 0,
-  context?: { nodes: number }
+  context?: { nodes: number },
+  extensions: number = 0
 ): number {
   if (context) context.nodes++;
   const status = game.isTerminal();
   if (status.isOver) {
     if (status.winner === PLAYER_BLUE) return WIN_SCORE - ply;
     if (status.winner === PLAYER_RED) return LOSS_SCORE + ply;
-    // Terminal draw (repetition or 50-move): apply contempt against whichever side chose to enter the draw.
-    // If ply > 0, game.activePlayer is the opponent of the player who made the move.
-    // E.g., if game.activePlayer === PLAYER_RED, then PLAYER_BLUE just moved to trigger the draw.
-    // Since minimax score is from Blue's perspective, a penalty on Blue is -DRAW_CONTEMPT_FACTOR.
-    // If game.activePlayer === PLAYER_BLUE, PLAYER_RED just moved, so Blue gains +DRAW_CONTEMPT_FACTOR.
     if (ply > 0) {
       return game.activePlayer === PLAYER_RED ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
     }
     return DRAW_SCORE;
   }
-  if (depth === 0) {
-    return evaluate(game, weights);
+
+  // Runway cutoff: if a mathematically unstoppable runway exists, resolve immediately!
+  const runwayEval = evaluateRunwayRace(game);
+  if (runwayEval) {
+    return runwayEval.score > 0 ? runwayEval.score - ply : runwayEval.score + ply;
+  }
+
+  // TT probe (internal nodes)
+  const origAlpha = alpha;
+  const origBeta = beta;
+  let ttMove: Move | null = null;
+
+  if (ply > 0) {
+    const entry = globalIntransitiveTT.probe(game.zobristKey, ply);
+    if (entry) {
+      ttMove = entry.bestMove;
+      if (entry.depth >= depth) {
+        if (entry.flag === TTFlag.Exact) {
+          return entry.score;
+        } else if (entry.flag === TTFlag.LowerBound) {
+          alpha = Math.max(alpha, entry.score);
+        } else if (entry.flag === TTFlag.UpperBound) {
+          beta = Math.min(beta, entry.score);
+        }
+        if (alpha >= beta) {
+          return entry.score;
+        }
+      }
+    }
+  }
+
+  // Touchdown Extension: if a runner is within 1 step of goal, extend search branch by 1 ply (depth >= 3)
+  let effectiveDepth = depth;
+  let nextExtensions = extensions;
+  if (depth >= 3 && extensions < 2 && hasRunnerThreat(game)) {
+    effectiveDepth = depth + 1;
+    nextExtensions = extensions + 1;
+  }
+
+  if (effectiveDepth <= 0) {
+    return evaluateAny(game, weights);
   }
 
   const moves = game.generateLegalMoves();
@@ -116,26 +198,28 @@ export function minimax(
     const term = game.isTerminal();
     if (term.winner === PLAYER_BLUE) return WIN_SCORE - ply;
     if (term.winner === PLAYER_RED) return LOSS_SCORE + ply;
-    return evaluate(game, weights);
+    return evaluateAny(game, weights);
   }
 
-  // Tactical move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
-  if (depth > 1 && moves.length > 1) {
-    orderMovesTactically(moves, game.activePlayer);
+  // Tactical move ordering: TT best move, touchdown wins, runner threats, captures
+  if (effectiveDepth > 1 && moves.length > 1) {
+    orderMovesTactically(moves, game.activePlayer, ttMove);
   }
 
   const isMaximizing = game.activePlayer === PLAYER_BLUE;
+  let bestMove: Move | null = moves[0];
 
   if (isMaximizing) {
     let maxEval = -Infinity;
     for (let i = 0; i < moves.length; i++) {
-      game.makeMove(moves[i]);
+      const move = moves[i];
+      game.makeMove(move);
       const repCount = game.getRepetitionCount();
       let score: number;
       if (repCount >= 3) {
         score = -DRAW_CONTEMPT_FACTOR;
       } else {
-        score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
+        score = minimax(game, effectiveDepth - 1, alpha, beta, weights, ply + 1, context, nextExtensions);
         if (repCount === 2) {
           score -= REPETITION_PENALTY_2FOLD;
         }
@@ -144,6 +228,7 @@ export function minimax(
 
       if (score > maxEval) {
         maxEval = score;
+        bestMove = move;
       }
       if (score > alpha) {
         alpha = score;
@@ -152,17 +237,27 @@ export function minimax(
         break; // Beta cutoff
       }
     }
+
+    let flag: (typeof TTFlag)[keyof typeof TTFlag] = TTFlag.Exact;
+    if (maxEval <= origAlpha) {
+      flag = TTFlag.UpperBound;
+    } else if (maxEval >= origBeta) {
+      flag = TTFlag.LowerBound;
+    }
+    globalIntransitiveTT.store(game.zobristKey, depth, maxEval, flag, bestMove, ply);
+
     return maxEval;
   } else {
     let minEval = Infinity;
     for (let i = 0; i < moves.length; i++) {
-      game.makeMove(moves[i]);
+      const move = moves[i];
+      game.makeMove(move);
       const repCount = game.getRepetitionCount();
       let score: number;
       if (repCount >= 3) {
         score = DRAW_CONTEMPT_FACTOR;
       } else {
-        score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
+        score = minimax(game, effectiveDepth - 1, alpha, beta, weights, ply + 1, context, nextExtensions);
         if (repCount === 2) {
           score += REPETITION_PENALTY_2FOLD;
         }
@@ -171,6 +266,7 @@ export function minimax(
 
       if (score < minEval) {
         minEval = score;
+        bestMove = move;
       }
       if (score < beta) {
         beta = score;
@@ -179,6 +275,15 @@ export function minimax(
         break; // Alpha cutoff
       }
     }
+
+    let flag: (typeof TTFlag)[keyof typeof TTFlag] = TTFlag.Exact;
+    if (minEval <= origAlpha) {
+      flag = TTFlag.UpperBound;
+    } else if (minEval >= origBeta) {
+      flag = TTFlag.LowerBound;
+    }
+    globalIntransitiveTT.store(game.zobristKey, depth, minEval, flag, bestMove, ply);
+
     return minEval;
   }
 }
@@ -198,13 +303,13 @@ export interface SelectMoveOptions {
  */
 function selectMoveFixedDepth(
   game: IntransitiveGame,
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   optionsOrDepth: number | SelectMoveOptions = 1,
   legacyEpsilon: number = 0.0
 ): SearchResult {
   const moves = game.generateLegalMoves();
   if (moves.length === 0) {
-    return { bestMove: null, score: evaluate(game, weights) };
+    return { bestMove: null, score: evaluateAny(game, weights) };
   }
 
   // Parse options
@@ -225,6 +330,11 @@ function selectMoveFixedDepth(
     rootNoise = optionsOrDepth.rootNoise ?? 0.0;
     ply = optionsOrDepth.ply ?? 0;
     openingPlies = optionsOrDepth.openingPlies;
+  }
+
+  // Increment TT age on root searches
+  if (ply === 0) {
+    globalIntransitiveTT.incrementAge();
   }
 
   // Anneal temperature: after openingPlies, drop temperature and noise to 0 for greedy conversion
@@ -255,8 +365,11 @@ function selectMoveFixedDepth(
         score = isMaximizing ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
       }
     } else {
-      if (depth <= 1) {
-        score = evaluate(game, weights);
+      const runwayEval = evaluateRunwayRace(game);
+      if (runwayEval) {
+        score = runwayEval.score > 0 ? runwayEval.score - 1 : runwayEval.score + 1;
+      } else if (depth <= 1) {
+        score = evaluateAny(game, weights);
       } else {
         score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1);
       }
@@ -352,7 +465,7 @@ function selectMoveFixedDepth(
  */
 export function selectMove(
   game: IntransitiveGame,
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   optionsOrDepth: number | SelectMoveOptions = 1,
   legacyEpsilon: number = 0.0
 ): SearchResult {
@@ -367,7 +480,7 @@ export function selectMove(
       1000;
     const startTime = performance.now();
     const maxSearchDepth = optionsOrDepth.depth ?? 6;
-    let bestResult: SearchResult = { bestMove: null, score: evaluate(game, weights) };
+    let bestResult: SearchResult = { bestMove: null, score: evaluateAny(game, weights) };
 
     for (let d = 1; d <= maxSearchDepth; d++) {
       const singleDepthOpts: SelectMoveOptions = {
@@ -431,7 +544,7 @@ function sampleGamma(alpha: number): number {
  */
 function extractPVContinuation(
   game: IntransitiveGame,
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   maxPlies: number = 5
 ): string[] {
   const pv: string[] = [];
@@ -451,7 +564,7 @@ function extractPVContinuation(
     for (let j = 0; j < replies.length; j++) {
       const reply = replies[j];
       game.makeMove(reply);
-      const score = evaluate(game, weights);
+      const score = evaluateAny(game, weights);
       game.unmakeMove();
 
       if (isBlue) {
@@ -488,7 +601,7 @@ function extractPVContinuation(
  */
 export function getTopMoves(
   game: IntransitiveGame,
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   count: number = 5,
   depth: number = 1,
   context?: { nodes: number },
@@ -527,6 +640,7 @@ export function getTopMoves(
     const repCount = game.getRepetitionCount();
 
     if (term.isOver) {
+      if (context) context.nodes++;
       if (term.winner === PLAYER_BLUE) {
         score = WIN_SCORE - 1;
       } else if (term.winner === PLAYER_RED) {
@@ -534,19 +648,25 @@ export function getTopMoves(
       } else {
         score = isMaximizing ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
       }
-    } else if (hasDecisiveMate && i >= count) {
-      if (context) context.nodes++;
-      score = evaluate(game, weights);
-    } else if (depth <= 1) {
-      if (context) context.nodes++;
-      score = evaluate(game, weights);
-      if (repCount === 2) {
-        score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
-      }
     } else {
-      score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1, context);
-      if (repCount === 2) {
-        score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
+      const runwayEval = evaluateRunwayRace(game);
+      if (runwayEval) {
+        if (context) context.nodes++;
+        score = runwayEval.score > 0 ? runwayEval.score - 1 : runwayEval.score + 1;
+      } else if (hasDecisiveMate && i >= count) {
+        if (context) context.nodes++;
+        score = evaluateAny(game, weights);
+      } else if (depth <= 1) {
+        if (context) context.nodes++;
+        score = evaluateAny(game, weights);
+        if (repCount === 2) {
+          score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
+        }
+      } else {
+        score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1, context);
+        if (repCount === 2) {
+          score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
+        }
       }
     }
 
@@ -576,7 +696,8 @@ export function getTopMoves(
       threat = 'Draw (Repetition/50M)';
     } else if (isMate) {
       const movesToMate = Math.max(1, Math.ceil((mateInPlies ?? 1) / 2));
-      threat = `🏆 Forced Win (M${movesToMate})`;
+      const isWinningMate = (isMaximizing && score > 0) || (!isMaximizing && score < 0);
+      threat = isWinningMate ? `🏆 Forced Win (M${movesToMate})` : `❌ Forced Loss (-M${movesToMate})`;
     } else if (move.captured) {
       threat = `Capture ${move.captured}`;
     }
@@ -633,7 +754,7 @@ export interface AnalysisStepResult {
  */
 export function runIterativeDeepeningAnalysis(
   game: IntransitiveGame,
-  weights: EvaluationWeights,
+  weights: EvaluationWeights | NNUEWeights,
   maxDepth: number = 6,
   count: number = 5,
   onProgress?: (result: AnalysisStepResult) => void,

@@ -177,9 +177,11 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
               style={{ minWidth: '240px', fontWeight: 600 }}
             >
               <optgroup label="Trained AI Models">
+                <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
                 <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
-                <option value="preset-intermediate">🥈 Intermediate (TD-Leaf Trained)</option>
-                <option value="preset-novice">🥉 Novice (TD-Leaf Trained)</option>
+                <option value="preset-advanced">🥈 Advanced (TD-Leaf Trained)</option>
+                <option value="preset-intermediate">🥉 Intermediate (TD-Leaf Trained)</option>
+                <option value="preset-novice">🎖️ Novice (TD-Leaf Trained)</option>
               </optgroup>
               <optgroup label="Benchmarks & Baselines">
                 <option value="preset-heuristic-master">🏆 Heuristic Master (Baseline Handcrafted)</option>
@@ -380,9 +382,11 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                 style={{ maxWidth: '200px' }}
               >
                 <optgroup label="Trained AI Models">
-                  <option value="preset-master">🥇 Master</option>
-                  <option value="preset-intermediate">🥈 Intermediate</option>
-                  <option value="preset-novice">🥉 Novice</option>
+                  <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
+                  <option value="preset-master">🥇 Master (Trained)</option>
+                  <option value="preset-advanced">🥈 Advanced (Trained)</option>
+                  <option value="preset-intermediate">🥉 Intermediate (Trained)</option>
+                  <option value="preset-novice">🎖️ Novice (Trained)</option>
                 </optgroup>
                 <optgroup label="Benchmarks & Baselines">
                   <option value="preset-heuristic-master">🏆 Heuristic Master</option>

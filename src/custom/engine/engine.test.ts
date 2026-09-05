@@ -16,10 +16,12 @@ import {
   formatEvalScore,
   runIterativeDeepeningAnalysis,
   selectMove,
+  findUnstoppableRunway,
   DRAW_CONTEMPT_FACTOR,
   REPETITION_PENALTY_2FOLD,
 } from './search';
-import { algebraicToSquare, BLUE_GOAL_SQUARE, RED_GOAL_SQUARE } from '../core/constants';
+import { algebraicToSquare, squareToAlgebraic, BLUE_GOAL_SQUARE, RED_GOAL_SQUARE } from '../core/constants';
+import { PLAYER_BLUE } from '../core/types';
 import {
   PRESET_CHECKPOINTS,
   saveCheckpoint,
@@ -29,7 +31,7 @@ import {
   importCheckpointsJSON,
 } from './checkpoint';
 
-function assert(condition: boolean, message: string): void {
+function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
     throw new Error(`Assertion failed: ${message}`);
   }
@@ -286,10 +288,11 @@ console.log('\n--- 11. Iterative Deepening & Multi-ply Forced Touchdown (+M2) De
 const mateGame = new IntransitiveGame('9/9/6R2/9/4r4/9/9/9/9 b 0 1');
 const testWeights = createHeuristicWeights();
 
-// At Depth 2: search only sees 2 plies, so it cannot resolve touchdown at ply 3
+// With Runway Solver: search recognizes forced touchdown in 2 moves (+M2) immediately
 const depth2Moves = getTopMoves(mateGame, testWeights, 3, 2);
 assert(depth2Moves.length > 0, 'Must generate legal moves');
-assert(!depth2Moves[0].isMate, 'Depth 2 must not prematurely claim a mate it cannot see at ply 2');
+assert(depth2Moves[0].isMate === true, 'Runway solver must detect forced win in 2 moves even at Depth 2');
+assert(depth2Moves[0].san === 'Rg7-h8', 'Best move must advance along the runway to h8');
 
 // At Depth 4: iterative deepening reaches touchdown at ply 3, detecting forced win!
 const progressSteps: number[] = [];
@@ -400,4 +403,56 @@ const redMoveToI9 = redMoves.find((m) => m.from === h9 && m.to === i9);
 assert(redMoveToI9 === undefined, 'Red piece must NOT be allowed to enter own defending goal (i9)');
 console.log('✓ Goal-squatting prevention verified: defending teams cannot camp inside opponent touchdown squares');
 
+// 15. Arbitrary-Distance Runway Detection & Blunder Prevention (User Screenshot Position)
+console.log('\n--- 15. Arbitrary-Distance Runway Detection & Blunder Prevention (User Position) ---');
+// Reconstruct position based on user scenario:
+// Blue Paper at f5, Red Paper at g6 blocking the diagonal highway to i9 (goal).
+const blunderGameFEN = '3p5/5r3/4s4/2s2rpr1/1PS1SP3/1RPR3R1/9/4P4/9 r 0 1';
+const blunderGame = new IntransitiveGame(blunderGameFEN);
+const g6Sq = algebraicToSquare('g6');
+const g5Sq = algebraicToSquare('g5');
+const f5Sq = algebraicToSquare('f5');
+
+// 1. Before Red moves: g6 is blocked by Red Paper. Blue must NOT have a runway.
+const runwayBefore = findUnstoppableRunway(blunderGame, PLAYER_BLUE, false);
+assert(runwayBefore === null, 'Blue should have no unstoppable runway while g6 is occupied by Red Paper');
+
+// 2. Red Move Selection: Red must recognize that Pg6-g5 opens an unstoppable corridor for Blue, and VETO it!
+const redMoveDecision = selectMove(blunderGame, heuristicWeights, { depth: 1, temperature: 0.0 });
+assert(
+  redMoveDecision.bestMove !== null &&
+    !(redMoveDecision.bestMove.from === g6Sq && redMoveDecision.bestMove.to === g5Sq),
+  `Red must veto fatal blunder Pg6-g5, chose ${redMoveDecision.bestMove?.from}->${redMoveDecision.bestMove?.to}`
+);
+console.log('✓ Red engine successfully identified Pg6-g5 as a fatal blunder and vetoed it even at Depth 1');
+
+// 3. What if Red did blunder Pg6-g5?
+blunderGame.makeMove({ from: g6Sq, to: g5Sq, piece: 'P' });
+// Now it is Blue's turn to move.
+const runwayAfter = findUnstoppableRunway(blunderGame, PLAYER_BLUE, true);
+assert(runwayAfter !== null, 'Blue must have an unstoppable runway after g6 is vacated');
+assert(runwayAfter.distance === 4, `Runway distance must be 4 steps (f5->g6->h7->i8->i9), got ${runwayAfter.distance}`);
+assert(runwayAfter.pliesToWin === 7, `Runway pliesToWin must be 7 (4 moves), got ${runwayAfter.pliesToWin}`);
+const algebraicPath = runwayAfter.path.map(squareToAlgebraic).join(' -> ');
+assert(
+  algebraicPath === 'f5 -> g6 -> h7 -> i8 -> i9',
+  `Runway path must be f5 -> g6 -> h7 -> i8 -> i9, got ${algebraicPath}`
+);
+console.log(`✓ Blue unstoppable 4-move highway mathematically detected: ${algebraicPath} (7 plies to touchdown)`);
+
+// 4. Blue Move Selection: Blue must instantly play Pf5-g6 with decisive forced win evaluation
+const blueMoveDecision = selectMove(blunderGame, heuristicWeights, { depth: 1, temperature: 0.0 });
+assert(blueMoveDecision.bestMove !== null, 'Blue must select a move');
+assert(
+  blueMoveDecision.bestMove.from === f5Sq && blueMoveDecision.bestMove.to === g6Sq,
+  `Blue must play Pf5-g6 into the open corridor, got ${blueMoveDecision.bestMove?.from}->${blueMoveDecision.bestMove?.to}`
+);
+assert(
+  blueMoveDecision.score >= 9900,
+  `Blue move score must be near-terminal win (>= 9900), got ${blueMoveDecision.score}`
+);
+const blueFormatted = formatEvalScore(blueMoveDecision.score);
+console.log(`✓ Blue instantly plays Pf5-g6 with forced win evaluation (${blueFormatted}) at Depth 1!`);
+
 console.log('\n🎉 ALL INTRANSITIVE TD-LEARNING & ENGINE TESTS PASSED WITH 100% ACCURACY!');
+

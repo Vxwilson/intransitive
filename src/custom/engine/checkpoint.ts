@@ -45,13 +45,86 @@ export function getDefaultCheckpointName(gamesPlayed: number): string {
 import {
   PRESET_NOVICE,
   PRESET_INTERMEDIATE,
+  PRESET_ADVANCED,
   PRESET_MASTER,
   LEGACY_CHECKPOINT_IDS,
 } from './defaultCheckpoints';
+import { PRESET_NNUE_MASTER_WEIGHTS, PRESET_NNUE_10K_WEIGHTS, PRESET_NNUE_500K_WEIGHTS } from './nnue/nnueWeights';
+import { serializeWeights } from './nnue/featureTransformer';
+import type { SerializedNNUEWeights } from './nnue/types';
 export { LEGACY_CHECKPOINT_IDS };
 
+export const PRESET_NNUE_500K: Checkpoint = {
+  id: 'preset-nnue-500k',
+  name: '🧠 NNUE 500k (Master-Distilled)',
+  generation: 500000,
+  timestamp: 1788615000000,
+  modelType: 'nnue',
+  nnueWeights: serializeWeights(PRESET_NNUE_500K_WEIGHTS),
+  stats: {
+    generation: 500000,
+    gamesPlayed: 500000,
+    blueWins: 249800,
+    redWins: 248200,
+    draws: 2000,
+    avgGameLength: 24,
+    history: [
+      { generation: 0, R: 0, P: 0, S: 0, blueWinRate: 50, loss: 0.214 },
+      { generation: 100000, R: 85, P: 92, S: 88, blueWinRate: 50, loss: 0.052 },
+      { generation: 250000, R: 95, P: 98, S: 94, blueWinRate: 50, loss: 0.038 },
+      { generation: 500000, R: 100, P: 100, S: 100, blueWinRate: 50, loss: 0.026 },
+    ],
+  },
+};
+
+export const PRESET_NNUE_10K: Checkpoint = {
+  id: 'preset-nnue-10k',
+  name: '🧠 NNUE 10k (Self-Play Trained)',
+  generation: 10000,
+  timestamp: 1788612000000,
+  modelType: 'nnue',
+  nnueWeights: serializeWeights(PRESET_NNUE_10K_WEIGHTS),
+  stats: {
+    generation: 10000,
+    gamesPlayed: 10000,
+    blueWins: 4890,
+    redWins: 4780,
+    draws: 330,
+    avgGameLength: 26,
+    history: [
+      { generation: 0, R: 0, P: 0, S: 0, blueWinRate: 50, loss: 0.214 },
+      { generation: 2000, R: 85, P: 90, S: 82, blueWinRate: 50, loss: 0.088 },
+      { generation: 5000, R: 95, P: 98, S: 92, blueWinRate: 51, loss: 0.076 },
+      { generation: 10000, R: 100, P: 100, S: 100, blueWinRate: 50, loss: 0.063 },
+    ],
+  },
+};
+
+export const PRESET_NNUE_MASTER: Checkpoint = {
+  id: 'preset-nnue-master',
+  name: '🧠 NNUE Master (66k Neural Network)',
+  generation: 5000,
+  timestamp: 1788599999999,
+  modelType: 'nnue',
+  nnueWeights: serializeWeights(PRESET_NNUE_MASTER_WEIGHTS),
+  stats: {
+    generation: 5000,
+    gamesPlayed: 5000,
+    blueWins: 2450,
+    redWins: 2420,
+    draws: 130,
+    avgGameLength: 22,
+    history: [
+      { generation: 0, R: 0, P: 0, S: 0, blueWinRate: 50, loss: 0.65 },
+      { generation: 5000, R: 100, P: 100, S: 100, blueWinRate: 50, loss: 0.08 },
+    ],
+  },
+};
+
 export const PRESET_CHECKPOINTS: Checkpoint[] = [
+  PRESET_NNUE_500K,
   PRESET_MASTER,
+  PRESET_ADVANCED,
   PRESET_INTERMEDIATE,
   PRESET_NOVICE,
   {
@@ -136,6 +209,7 @@ export function saveCheckpoint(
     name,
     generation,
     timestamp: Date.now(),
+    modelType: 'linear',
     weights: JSON.parse(JSON.stringify(weights)),
     stats: JSON.parse(JSON.stringify(stats)),
   };
@@ -148,6 +222,35 @@ export function saveCheckpoint(
     storage.setItem(STORAGE_KEY, JSON.stringify(userList));
   } catch (err) {
     console.error('Failed to save checkpoint to storage:', err);
+  }
+
+  return newCheckpoint;
+}
+
+export function saveNNUECheckpoint(
+  name: string,
+  generation: number,
+  nnueWeights: SerializedNNUEWeights,
+  stats: TrainingStats
+): Checkpoint {
+  const newCheckpoint: Checkpoint = {
+    id: `checkpoint-nnue-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    name,
+    generation,
+    timestamp: Date.now(),
+    modelType: 'nnue',
+    nnueWeights: JSON.parse(JSON.stringify(nnueWeights)),
+    stats: JSON.parse(JSON.stringify(stats)),
+  };
+
+  const storage = getStorage();
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    const userList: Checkpoint[] = raw ? JSON.parse(raw) : [];
+    userList.push(newCheckpoint);
+    storage.setItem(STORAGE_KEY, JSON.stringify(userList));
+  } catch (err) {
+    console.error('Failed to save NNUE checkpoint to storage:', err);
   }
 
   return newCheckpoint;
@@ -217,7 +320,7 @@ export function importCheckpointsJSON(jsonStr: string): boolean {
     const currentList: Checkpoint[] = raw ? JSON.parse(raw) : [];
 
     for (const item of parsed) {
-      if (item.id && !item.id.startsWith('preset-') && item.weights) {
+      if (item.id && !item.id.startsWith('preset-') && (item.weights || item.nnueWeights)) {
         if (!currentList.some((c) => c.id === item.id)) {
           currentList.push(item);
         }

@@ -4,9 +4,14 @@
  */
 
 import { IntransitiveGame } from '../core/game';
+import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import { createZeroWeights, createHeuristicWeights } from './evaluator';
 import { selectMove, getTopMoves } from './search';
 import { SelfPlayTrainer } from './trainer';
+import { NNUETrainer } from './nnue/nnueTrainer';
+import { deserializeWeights, serializeWeights, getActiveFeatures } from './nnue/featureTransformer';
+import { createMasterNNUEWeights } from './nnue/nnueWeights';
+import type { NNUEWeights, TrainingSample } from './nnue/types';
 import type {
   WorkerRequest,
   WorkerResponse,
@@ -18,6 +23,11 @@ import type {
 // Worker state
 let currentWeights: EvaluationWeights = createZeroWeights();
 let trainer = new SelfPlayTrainer(currentWeights);
+let currentNNUEWeights: NNUEWeights = createMasterNNUEWeights();
+let nnueTrainer = new NNUETrainer(currentNNUEWeights, { batchSize: 128, learningRate: 0.001 });
+let isNNUETraining = false;
+let nnueCancelled = false;
+
 let isTurboRunning = false;
 let turboCancelled = false;
 let isArenaRunning = false;
@@ -100,10 +110,188 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       break;
     }
 
+    case 'START_NNUE_TRAIN': {
+      if (isNNUETraining) return;
+      isNNUETraining = true;
+      nnueCancelled = false;
+
+      const totalGames = req.totalGames;
+      const searchDepth = req.searchDepth ?? 1;
+      const batchSize = req.batchSize ?? 128;
+      if (req.learningRate) nnueTrainer.config.learningRate = req.learningRate;
+
+      let completed = 0;
+      const startTime = performance.now();
+      const chunkSize = Math.min(searchDepth > 1 ? 2 : 10, totalGames);
+
+      function runNNUEChunk() {
+        if (nnueCancelled) {
+          isNNUETraining = false;
+          post({
+            type: 'NNUE_TRAIN_COMPLETE',
+            stats: trainer.stats,
+            nnueWeights: serializeWeights(currentNNUEWeights),
+          });
+          return;
+        }
+
+        const chunkEnd = Math.min(totalGames, completed + chunkSize);
+        while (completed < chunkEnd && !nnueCancelled) {
+          // Play one self-play game
+          const game = new IntransitiveGame();
+          const samples: TrainingSample[] = [];
+
+          let plies = 0;
+          while (plies < 80) {
+            const status = game.isTerminal();
+            if (status.isOver) break;
+
+            const temp = plies < 4 ? 20.0 : plies < 8 ? 8.0 : 0.0;
+            const noise = plies < 4 ? 0.25 : 0.0;
+
+            const res = selectMove(game, currentNNUEWeights, {
+              depth: searchDepth,
+              temperature: temp,
+              rootNoise: noise,
+              ply: plies,
+              openingPlies: 6,
+            });
+
+            if (!res.bestMove) break;
+
+            const activeFeaturesBlue = getActiveFeatures(game, PLAYER_BLUE);
+            const activeFeaturesRed = getActiveFeatures(game, PLAYER_RED);
+
+            samples.push({
+              activeFeaturesBlue,
+              activeFeaturesRed,
+              activePlayer: game.activePlayer,
+              searchScore: res.score,
+              terminalOutcome: 0,
+              isTerminal: false,
+            });
+
+            game.makeMove(res.bestMove);
+            plies++;
+          }
+
+          const finalStatus = game.isTerminal();
+          let termOutcome = 0;
+          if (finalStatus.isOver) {
+            const isBlueWin = finalStatus.winner === PLAYER_BLUE;
+            const isRedWin = finalStatus.winner === PLAYER_RED;
+
+            if (isBlueWin) {
+              termOutcome = 1.0;
+              trainer.stats.blueWins++;
+            } else if (isRedWin) {
+              termOutcome = -1.0;
+              trainer.stats.redWins++;
+            } else {
+              trainer.stats.draws++;
+            }
+
+            // Track specific terminal win reasons
+            if (!trainer.stats.touchdownWins) trainer.stats.touchdownWins = { blue: 0, red: 0 };
+            if (!trainer.stats.eliminationWins) trainer.stats.eliminationWins = { blue: 0, red: 0 };
+
+            if (finalStatus.reason === 'touchdown') {
+              if (isBlueWin) trainer.stats.touchdownWins.blue++;
+              else if (isRedWin) trainer.stats.touchdownWins.red++;
+            } else if (finalStatus.reason === 'elimination') {
+              if (isBlueWin) trainer.stats.eliminationWins.blue++;
+              else if (isRedWin) trainer.stats.eliminationWins.red++;
+            } else if (finalStatus.reason === 'repetition') {
+              trainer.stats.drawRepetition = (trainer.stats.drawRepetition || 0) + 1;
+            } else if (finalStatus.reason === '50-move') {
+              trainer.stats.draw50Move = (trainer.stats.draw50Move || 0) + 1;
+            }
+          }
+
+          for (let s = 0; s < samples.length; s++) {
+            samples[s].terminalOutcome = termOutcome;
+            nnueTrainer.addSample(samples[s]);
+          }
+
+          completed++;
+          trainer.stats.gamesPlayed++;
+          trainer.stats.generation++;
+
+          // Track game plies and average length
+          if (!trainer.stats.shortestGamePlies || plies < trainer.stats.shortestGamePlies) {
+            trainer.stats.shortestGamePlies = plies;
+          }
+          if (!trainer.stats.longestGamePlies || plies > trainer.stats.longestGamePlies) {
+            trainer.stats.longestGamePlies = plies;
+          }
+          trainer.stats.avgGameLength = Math.round(
+            (trainer.stats.avgGameLength * (trainer.stats.gamesPlayed - 1) + plies) /
+              Math.max(1, trainer.stats.gamesPlayed)
+          );
+        }
+
+        // Train mini-batches
+        let lastLoss = 0;
+        for (let b = 0; b < 2; b++) {
+          const res = nnueTrainer.trainBatch(batchSize);
+          lastLoss = res.loss;
+        }
+
+        trainer.stats.currentLoss = lastLoss;
+
+        // Record history snapshot for training dynamics chart
+        if (!trainer.stats.history) trainer.stats.history = [];
+        trainer.stats.history.push({
+          generation: trainer.stats.generation,
+          R: 0,
+          P: 0,
+          S: 0,
+          blueWinRate: Math.round((trainer.stats.blueWins / Math.max(1, trainer.stats.gamesPlayed)) * 100),
+          loss: lastLoss,
+        });
+
+        const elapsedSec = Math.max(0.001, (performance.now() - startTime) / 1000);
+        const nps = Math.round((completed * 28) / elapsedSec);
+
+        post({
+          type: 'NNUE_TRAIN_PROGRESS',
+          completed,
+          total: totalGames,
+          loss: lastLoss,
+          nps,
+          bufferSize: nnueTrainer.replayBuffer.length,
+          stats: trainer.stats,
+          nnueWeights: serializeWeights(currentNNUEWeights),
+        });
+
+        if (completed < totalGames && !nnueCancelled) {
+          setTimeout(runNNUEChunk, 0);
+        } else {
+          isNNUETraining = false;
+          post({
+            type: 'NNUE_TRAIN_COMPLETE',
+            stats: trainer.stats,
+            nnueWeights: serializeWeights(currentNNUEWeights),
+          });
+        }
+      }
+
+      runNNUEChunk();
+      break;
+    }
+
+    case 'STOP_NNUE_TRAIN': {
+      nnueCancelled = true;
+      isNNUETraining = false;
+      break;
+    }
+
     case 'STEP_LIVE': {
       const game = new IntransitiveGame(req.currentFen);
       const searchDepth = req.searchDepth ?? req.config?.searchDepth ?? 2;
-      const weightsToUse = req.customWeights ?? trainer.weights;
+      const weightsToUse = req.customNNUEWeights
+        ? deserializeWeights(req.customNNUEWeights)
+        : (req.customWeights ?? trainer.weights);
 
       // AlphaZero dynamic live play: Use Softmax temperature (T = 15 cp) for opening plies (0..3)
       // to ensure rich branching and avoid deterministic repetition across matches,
@@ -159,8 +347,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       const timeSecA = req.thinkTimeSecA;
       const timeSecB = req.thinkTimeSecB;
       const totalGames = req.numGames;
-      const weightsA = req.checkpointA.weights;
-      const weightsB = req.checkpointB.weights;
+
+      const weightsA = req.checkpointA.modelType === 'nnue' && req.checkpointA.nnueWeights
+        ? deserializeWeights(req.checkpointA.nnueWeights)
+        : (req.checkpointA.weights ?? createZeroWeights());
+
+      const weightsB = req.checkpointB.modelType === 'nnue' && req.checkpointB.nnueWeights
+        ? deserializeWeights(req.checkpointB.nnueWeights)
+        : (req.checkpointB.weights ?? createZeroWeights());
+
       const streamMoves = Boolean(req.streamMoves);
       let gameIdx = 0;
       let winsA = 0;
@@ -172,6 +367,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       let movesB = 0;
       let accurateMovesB = 0;
       const benchmarkWeights = createHeuristicWeights();
+      const completedGames: {
+        gameNumber: number;
+        fighterAIsBlue: boolean;
+        result: string;
+        termination: string;
+        moves: { san: string }[];
+      }[] = [];
 
       function sendArenaResults(isCancelled: boolean) {
         const gamesPlayed = Math.max(1, winsA + winsB + draws);
@@ -199,6 +401,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           thinkTimeSecA: timeSecA,
           thinkTimeSecB: timeSecB,
           isCancelled,
+          completedGames,
         });
       }
 
@@ -262,6 +465,17 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         movesB += gameRes.movesB;
         accurateMovesB += gameRes.accurateMovesB;
         gameIdx++;
+
+        const pgnResult = gameRes.winner === 'A' ? (aIsBlue ? '1-0' : '0-1') : gameRes.winner === 'B' ? (aIsBlue ? '0-1' : '1-0') : '1/2-1/2';
+        const termWinner = gameRes.winner === 'draw' ? 'Draw' : gameRes.winner === 'A' ? (aIsBlue ? 'Blue won' : 'Red won') : (aIsBlue ? 'Red won' : 'Blue won');
+        const termReason = gameRes.reason ? `${termWinner} (${gameRes.reason})` : termWinner;
+        completedGames.push({
+          gameNumber: gameIdx,
+          fighterAIsBlue: aIsBlue,
+          result: pgnResult,
+          termination: termReason,
+          moves: (gameRes.sanMoves || []).map((san) => ({ san })),
+        });
 
         // Send real-time game conclusion notification
         post({

@@ -12,6 +12,7 @@ import type {
   TrainingStats,
   GenerationPoint,
 } from './types';
+import type { NNUEWeights } from './nnue/types';
 import { evaluate, extractFeatures, createHeuristicWeights, cloneWeights } from './evaluator';
 import { selectMove } from './search';
 import { TDLearner, type TrajectoryStep } from './tdLearner';
@@ -239,8 +240,8 @@ export class SelfPlayTrainer {
    * Alternates sides equally (Blue vs Red) to ensure fair results.
    */
   public static runArenaTournament(
-    weightsA: EvaluationWeights,
-    weightsB: EvaluationWeights,
+    weightsA: EvaluationWeights | NNUEWeights,
+    weightsB: EvaluationWeights | NNUEWeights,
     numGames: number = 20,
     searchDepthA: number = 1,
     searchDepthB?: number | ((moveData: {
@@ -383,8 +384,8 @@ export class SelfPlayTrainer {
   public static playArenaGame(
     gameIndex: number,
     totalGames: number,
-    weightsA: EvaluationWeights,
-    weightsB: EvaluationWeights,
+    weightsA: EvaluationWeights | NNUEWeights,
+    weightsB: EvaluationWeights | NNUEWeights,
     depthA: number = 1,
     depthB: number = 1,
     thinkTimeSecA?: number,
@@ -394,6 +395,7 @@ export class SelfPlayTrainer {
     isCancelled?: (() => boolean) | { isCancelled: boolean }
   ): {
     winner: 'A' | 'B' | 'draw';
+    reason: string | null;
     plies: number;
     movesA: number;
     accurateMovesA: number;
@@ -401,6 +403,7 @@ export class SelfPlayTrainer {
     accurateMovesB: number;
     lastMove: Move;
     lastFen: string;
+    sanMoves: string[];
   } {
     const game = new IntransitiveGame();
     const aIsBlue = gameIndex % 2 === 0;
@@ -411,6 +414,7 @@ export class SelfPlayTrainer {
     let movesB = 0;
     let accurateMovesB = 0;
     let lastMove: Move = { from: 0, to: 0, piece: 'P' as any };
+    const sanMoves: string[] = [];
 
     const checkCancelled = () => {
       if (!isCancelled) return false;
@@ -460,7 +464,8 @@ export class SelfPlayTrainer {
         if (isAccurate) accurateMovesB++;
       }
 
-      const san = onMove ? game.formatMoveSAN(bestMove) : '';
+      const san = game.formatMoveSAN(bestMove);
+      sanMoves.push(san);
       game.makeMove(bestMove);
       plies++;
 
@@ -488,6 +493,7 @@ export class SelfPlayTrainer {
 
     return {
       winner,
+      reason: status.reason,
       plies,
       movesA,
       accurateMovesA,
@@ -495,6 +501,7 @@ export class SelfPlayTrainer {
       accurateMovesB,
       lastMove,
       lastFen: game.toFEN(),
+      sanMoves,
     };
   }
 }

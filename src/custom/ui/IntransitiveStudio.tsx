@@ -18,12 +18,17 @@ import {
   Clock,
   ScrollText,
   Settings as SettingsIcon,
+  Copy,
+  FileText,
+  X,
+  Download,
 } from 'lucide-react';
+import { generateGamePGN, generateTournamentPGN, downloadTextFile } from '../core/pgn';
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
-import type { Move, Player } from '../core/types';
-import { createZeroWeights, createHeuristicWeights, evaluate } from '../engine/evaluator';
-import { getTopMoves, formatEvalScore } from '../engine/search';
+import type { Move } from '../core/types';
+import { createZeroWeights, createHeuristicWeights } from '../engine/evaluator';
+import { getTopMoves, formatEvalScore, evaluateAny } from '../engine/search';
 import type {
   EvaluationWeights,
   TrainingStats,
@@ -31,9 +36,13 @@ import type {
   WorkerResponse,
   AnalysisTelemetry,
 } from '../engine/types';
+import type { NNUEWeights } from '../engine/nnue/types';
+import { deserializeWeights, serializeWeights } from '../engine/nnue/featureTransformer';
+import { PRESET_NNUE_MASTER_WEIGHTS, PRESET_NNUE_10K_WEIGHTS, PRESET_NNUE_500K_WEIGHTS } from '../engine/nnue/nnueWeights';
 import {
   getStoredCheckpoints,
   saveCheckpoint,
+  saveNNUECheckpoint,
   renameCheckpoint,
   deleteCheckpoint,
   clearAllUserCheckpoints,
@@ -109,13 +118,40 @@ function saveSettingsToStorage(settings: SavedSettings) {
 export const IntransitiveStudio: React.FC = () => {
   const initialSettings = useMemo(() => loadSavedSettings(), []);
 
-  // Game state
-  const [game, setGame] = useState<IntransitiveGame>(() => new IntransitiveGame());
-  const [selectedSquare, setSelectedSquare] = useState<number | null>(null);
-  const [lastMove, setLastMove] = useState<Move | null>(null);
-  const [moveHistory, setMoveHistory] = useState<{ move: Move; san: string; fen: string }[]>([]);
-  const [historyIndex, setHistoryIndex] = useState<number>(-1);
-  const [isBoardFlipped, setIsBoardFlipped] = useState<boolean>(false);
+  // Arena Game State (isolated for Visual Arena exhibition & tournament simulations)
+  const [arenaGame, setArenaGame] = useState<IntransitiveGame>(() => new IntransitiveGame());
+  const [arenaSelectedSquare, setArenaSelectedSquare] = useState<number | null>(null);
+  const [arenaLastMove, setArenaLastMove] = useState<Move | null>(null);
+  const [arenaMoveHistory, setArenaMoveHistory] = useState<{ move: Move; san: string; fen: string }[]>([]);
+  const [arenaHistoryIndex, setArenaHistoryIndex] = useState<number>(-1);
+  const [arenaIsBoardFlipped, setArenaIsBoardFlipped] = useState<boolean>(false);
+
+  // Human Play Game State (completely isolated from Visual Arena)
+  const [playGame, setPlayGame] = useState<IntransitiveGame>(() => new IntransitiveGame());
+  const [playSelectedSquare, setPlaySelectedSquare] = useState<number | null>(null);
+  const [playLastMove, setPlayLastMove] = useState<Move | null>(null);
+  const [playMoveHistory, setPlayMoveHistory] = useState<{ move: Move; san: string; fen: string }[]>([]);
+  const [playHistoryIndex, setPlayHistoryIndex] = useState<number>(-1);
+  const [playIsBoardFlipped, setPlayIsBoardFlipped] = useState<boolean>(false);
+
+  // Tournament Completed Games for multi-game tournament PGN export
+  const [tournamentGames, setTournamentGames] = useState<
+    {
+      gameNumber: number;
+      fighterAIsBlue: boolean;
+      result: string;
+      termination: string;
+      moves: { san: string }[];
+    }[]
+  >([]);
+
+  // Export Modal (FEN / PGN) & Clipboard State
+  const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [exportModalTab, setExportModalTab] = useState<'fen' | 'pgn'>('fen');
+  const [customFenInput, setCustomFenInput] = useState<string>('');
+  const [fenCopied, setFenCopied] = useState<boolean>(false);
+  const [pgnCopied, setPgnCopied] = useState<boolean>(false);
+  const [fenError, setFenError] = useState<string | null>(null);
 
   // Model & Weights State
   const [weights, setWeights] = useState<EvaluationWeights>(() => createZeroWeights());
@@ -131,6 +167,22 @@ export const IntransitiveStudio: React.FC = () => {
 
   // UI Modes & Controls
   const [activeTab, setActiveTab] = useState<StudioTab>('arena');
+
+  // Active game context derived from current tab
+  const isPlayTab = activeTab === 'play';
+  const activeGame = isPlayTab ? playGame : arenaGame;
+  const activeSelectedSquare = isPlayTab ? playSelectedSquare : arenaSelectedSquare;
+  const setActiveSelectedSquare = isPlayTab ? setPlaySelectedSquare : setArenaSelectedSquare;
+  const activeLastMove = isPlayTab ? playLastMove : arenaLastMove;
+  const activeMoveHistory = isPlayTab ? playMoveHistory : arenaMoveHistory;
+  const activeHistoryIndex = isPlayTab ? playHistoryIndex : arenaHistoryIndex;
+  const activeIsBoardFlipped = isPlayTab ? playIsBoardFlipped : arenaIsBoardFlipped;
+  const setActiveIsBoardFlipped = isPlayTab ? setPlayIsBoardFlipped : setArenaIsBoardFlipped;
+
+  const activeTabRef = useRef<StudioTab>(activeTab);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
   const [isPlayingLive, setIsPlayingLive] = useState<boolean>(false);
   const [delayMs, setDelayMs] = useState<number>(initialSettings.delayMs ?? 300);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(initialSettings.soundEnabled ?? true);
@@ -138,6 +190,18 @@ export const IntransitiveStudio: React.FC = () => {
   // Turbo Worker State
   const [isTurboTraining, setIsTurboTraining] = useState<boolean>(false);
   const [turboProgress, setTurboProgress] = useState<{ completed: number; total: number; nps: number } | null>(null);
+
+  // NNUE Architecture State
+  const [trainerArchitecture, setTrainerArchitecture] = useState<'linear' | 'nnue'>('linear');
+  const [isNNUETraining, setIsNNUETraining] = useState<boolean>(false);
+  const [nnueProgress, setNnueProgress] = useState<{
+    completed: number;
+    total: number;
+    loss: number;
+    nps: number;
+    bufferSize: number;
+  } | null>(null);
+  const [currentNNUEWeights, setCurrentNNUEWeights] = useState<NNUEWeights>(() => PRESET_NNUE_MASTER_WEIGHTS);
 
   // Checkpoints State
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(() => getStoredCheckpoints());
@@ -287,19 +351,64 @@ export const IntransitiveStudio: React.FC = () => {
   const analysisWorkerRef = useRef<Worker | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Helper to fetch weights for a model identifier
-  const getWeightsById = useCallback((id: string): EvaluationWeights => {
+  // Helper to fetch weights for a model identifier (returns Linear EvaluationWeights or NNUEWeights)
+  const getWeightsById = useCallback((id: string): EvaluationWeights | NNUEWeights => {
     const targetId = LEGACY_CHECKPOINT_IDS[id] || id;
-    if (targetId === 'current') return weights;
+    if (targetId === 'current') return trainerArchitecture === 'nnue' ? currentNNUEWeights : weights;
     if (targetId === 'preset-heuristic-master') return createHeuristicWeights();
     if (targetId === 'preset-gen-0') return createZeroWeights();
+    if (targetId === 'preset-nnue-500k') return PRESET_NNUE_500K_WEIGHTS;
+    if (targetId === 'preset-nnue-10k') return PRESET_NNUE_10K_WEIGHTS;
+    if (targetId === 'preset-nnue-master') return PRESET_NNUE_MASTER_WEIGHTS;
     const cp = checkpoints.find((c) => c.id === targetId);
-    return cp ? cp.weights : weights;
-  }, [weights, checkpoints]);
+    if (cp) {
+      if (cp.modelType === 'nnue' && cp.nnueWeights) {
+        return deserializeWeights(cp.nnueWeights);
+      }
+      return cp.weights ?? weights;
+    }
+    return weights;
+  }, [weights, checkpoints, trainerArchitecture, currentNNUEWeights]);
 
   // Coupled active evaluation model (used for both board eval and candidate move analysis)
   const activeEvalModel = useMemo(() => {
     const targetId = LEGACY_CHECKPOINT_IDS[evalModelId] || evalModelId;
+    if (targetId === 'preset-nnue-500k') {
+      return {
+        id: 'preset-nnue-500k',
+        name: 'NNUE 500k (Master-Distilled)',
+        displayName: 'NNUE 500k',
+        generation: 500000,
+        gamesPlayed: 500000,
+        modelType: 'nnue' as const,
+        nnueWeights: PRESET_NNUE_500K_WEIGHTS,
+        weights: undefined as any,
+      };
+    }
+    if (targetId === 'preset-nnue-10k') {
+      return {
+        id: 'preset-nnue-10k',
+        name: 'NNUE 10k (Self-Play Trained)',
+        displayName: 'NNUE 10k',
+        generation: 10000,
+        gamesPlayed: 10000,
+        modelType: 'nnue' as const,
+        nnueWeights: PRESET_NNUE_10K_WEIGHTS,
+        weights: undefined as any,
+      };
+    }
+    if (targetId === 'preset-nnue-master') {
+      return {
+        id: 'preset-nnue-master',
+        name: 'NNUE Master (66k Neural Network)',
+        displayName: 'NNUE Master',
+        generation: 5000,
+        gamesPlayed: 5000,
+        modelType: 'nnue' as const,
+        nnueWeights: PRESET_NNUE_MASTER_WEIGHTS,
+        weights: undefined as any,
+      };
+    }
     if (targetId === 'preset-heuristic-master') {
       return {
         id: 'preset-heuristic-master',
@@ -307,6 +416,7 @@ export const IntransitiveStudio: React.FC = () => {
         displayName: 'Heuristic',
         generation: 0,
         gamesPlayed: 10000,
+        modelType: 'linear' as const,
         weights: createHeuristicWeights(),
       };
     }
@@ -317,6 +427,7 @@ export const IntransitiveStudio: React.FC = () => {
         displayName: 'Gen 0',
         generation: 0,
         gamesPlayed: 0,
+        modelType: 'linear' as const,
         weights: createZeroWeights(),
       };
     }
@@ -327,12 +438,17 @@ export const IntransitiveStudio: React.FC = () => {
         displayName: `Gen ${stats.generation}`,
         generation: stats.generation,
         gamesPlayed: stats.gamesPlayed,
+        modelType: (trainerArchitecture === 'nnue' ? 'nnue' : 'linear') as 'linear' | 'nnue',
+        nnueWeights: trainerArchitecture === 'nnue' ? currentNNUEWeights : undefined,
         weights: weights,
       };
     }
     const cp = checkpoints.find((c) => c.id === targetId);
     if (cp) {
-      const label = cp.name.includes('Novice')
+      const isNNUE = cp.modelType === 'nnue';
+      const label = isNNUE
+        ? 'NNUE'
+        : cp.name.includes('Novice')
         ? 'Novice'
         : cp.name.includes('Intermediate')
         ? 'Intermediate'
@@ -347,6 +463,8 @@ export const IntransitiveStudio: React.FC = () => {
         displayName: label,
         generation: cp.generation,
         gamesPlayed: cp.stats?.gamesPlayed ?? cp.generation * 50,
+        modelType: (isNNUE ? 'nnue' : 'linear') as 'linear' | 'nnue',
+        nnueWeights: isNNUE && cp.nnueWeights ? deserializeWeights(cp.nnueWeights) : undefined,
         weights: cp.weights,
       };
     }
@@ -356,35 +474,54 @@ export const IntransitiveStudio: React.FC = () => {
       displayName: 'Master',
       generation: 800,
       gamesPlayed: 800,
+      modelType: 'linear' as const,
       weights: checkpoints.find((c) => c.id === 'preset-master')?.weights ?? createHeuristicWeights(),
     };
-  }, [evalModelId, stats, weights, checkpoints]);
+  }, [evalModelId, stats, weights, checkpoints, trainerArchitecture, currentNNUEWeights]);
 
-  // The definitive terminal status of the full match session (derived from the latest move in moveHistory)
+  // Combined checkpoints list including the active in-memory model (Linear or NNUE)
+  const allArenaCheckpoints = useMemo((): Checkpoint[] => {
+    const currentCp: Checkpoint = {
+      id: 'current',
+      name: `🤖 Current Model (Gen ${stats.generation})`,
+      generation: stats.generation,
+      timestamp: 0,
+      modelType: trainerArchitecture === 'nnue' ? 'nnue' : 'linear',
+      weights: trainerArchitecture === 'linear' ? weights : undefined,
+      nnueWeights: trainerArchitecture === 'nnue' ? serializeWeights(currentNNUEWeights) : undefined,
+      stats: stats,
+    };
+    return [currentCp, ...checkpoints];
+  }, [checkpoints, stats, trainerArchitecture, weights, currentNNUEWeights]);
+
+  // The definitive terminal status of the full match session (derived from activeMoveHistory or activeGame)
   const finalGameStatus = useMemo(() => {
-    if (moveHistory.length === 0) {
-      return { isOver: false, winner: null as Player | 'draw' | null, reason: undefined as string | undefined };
+    if (activeMoveHistory.length === 0) {
+      return activeGame.isTerminal();
     }
-    const lastEntry = moveHistory[moveHistory.length - 1];
+    const lastEntry = activeMoveHistory[activeMoveHistory.length - 1];
     const finalG = new IntransitiveGame(lastEntry.fen);
     return finalG.isTerminal();
-  }, [moveHistory]);
+  }, [activeMoveHistory, activeGame]);
 
   const isHumanTurn =
     activeTab === 'play' &&
     !finalGameStatus.isOver &&
-    game.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED);
+    activeGame.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED);
 
   // Synchronous candidate moves (instant baseline at Depth 1 for <1ms latency)
   const syncCandidateMoves = useMemo(() => {
     if (!isHumanTurn || !isAnalysisEnabled) return [];
-    return getTopMoves(game, activeEvalModel.weights, 5, Math.min(1, analysisTargetDepth));
-  }, [isHumanTurn, isAnalysisEnabled, game, activeEvalModel, analysisTargetDepth]);
+    const modelWeights = activeEvalModel.modelType === 'nnue' && activeEvalModel.nnueWeights
+      ? activeEvalModel.nnueWeights
+      : (activeEvalModel.weights ?? weights);
+    return getTopMoves(activeGame, modelWeights, 5, Math.min(1, analysisTargetDepth));
+  }, [isHumanTurn, isAnalysisEnabled, activeGame, activeEvalModel, analysisTargetDepth, weights]);
 
   // Combined candidate moves: prefer deeper worker iterative results matching current position
   const candidateMoves = useMemo(() => {
     if (!isHumanTurn || !isAnalysisEnabled) return [];
-    const currentFen = game.toFEN();
+    const currentFen = activeGame.toFEN();
     if (
       analysisTelemetry &&
       analysisTelemetry.currentFen === currentFen &&
@@ -393,12 +530,12 @@ export const IntransitiveStudio: React.FC = () => {
       return analysisTelemetry.candidateMoves;
     }
     return syncCandidateMoves;
-  }, [isHumanTurn, isAnalysisEnabled, game, analysisTelemetry, syncCandidateMoves]);
+  }, [isHumanTurn, isAnalysisEnabled, activeGame, analysisTelemetry, syncCandidateMoves]);
 
   // Derived real-time telemetry: reflects worker progress or instantaneous depth-1 baseline
   const displayedTelemetry = useMemo((): AnalysisTelemetry | null => {
-    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver) return null;
-    const currentFen = game.toFEN();
+    if (activeTab !== 'play' || !isAnalysisEnabled || activeGame.isTerminal().isOver) return null;
+    const currentFen = activeGame.toFEN();
     if (analysisTelemetry && analysisTelemetry.currentFen === currentFen) {
       return analysisTelemetry;
     }
@@ -412,11 +549,11 @@ export const IntransitiveStudio: React.FC = () => {
       isSearching: isHumanTurn,
       currentFen,
     };
-  }, [activeTab, isAnalysisEnabled, game, analysisTelemetry, analysisTargetDepth, syncCandidateMoves, isHumanTurn]);
+  }, [activeTab, isAnalysisEnabled, activeGame, analysisTelemetry, analysisTargetDepth, syncCandidateMoves, isHumanTurn]);
 
   // Background iterative deepening engine analysis trigger (only active during human's turn)
   useEffect(() => {
-    if (activeTab !== 'play' || !isAnalysisEnabled || game.isTerminal().isOver || !isHumanTurn) {
+    if (activeTab !== 'play' || !isAnalysisEnabled || activeGame.isTerminal().isOver || !isHumanTurn) {
       if (analysisWorkerRef.current) {
         analysisWorkerRef.current.terminate();
         analysisWorkerRef.current = null;
@@ -430,7 +567,7 @@ export const IntransitiveStudio: React.FC = () => {
       analysisWorkerRef.current = null;
     }
 
-    const currentFen = game.toFEN();
+    const currentFen = activeGame.toFEN();
     const worker = new Worker(
       new URL('../engine/analysisWorker.ts', import.meta.url),
       { type: 'module' }
@@ -464,10 +601,12 @@ export const IntransitiveStudio: React.FC = () => {
       }
     };
 
+    const isNNUE = activeEvalModel.modelType === 'nnue';
     worker.postMessage({
       type: 'START_ANALYSIS',
       currentFen,
-      weights: activeEvalModel.weights,
+      weights: !isNNUE ? activeEvalModel.weights : undefined,
+      nnueWeights: isNNUE && activeEvalModel.nnueWeights ? serializeWeights(activeEvalModel.nnueWeights) : undefined,
       maxDepth: analysisTargetDepth,
       count: 5,
     });
@@ -478,7 +617,7 @@ export const IntransitiveStudio: React.FC = () => {
         analysisWorkerRef.current = null;
       }
     };
-  }, [game, activeTab, isAnalysisEnabled, isHumanTurn, activeEvalModel, analysisTargetDepth]);
+  }, [activeGame, activeTab, isAnalysisEnabled, isHumanTurn, activeEvalModel, analysisTargetDepth]);
 
   // Persist settings on change
   useEffect(() => {
@@ -569,6 +708,39 @@ export const IntransitiveStudio: React.FC = () => {
           break;
         }
 
+        case 'NNUE_TRAIN_PROGRESS': {
+          const deserialized = deserializeWeights(data.nnueWeights);
+          setCurrentNNUEWeights(deserialized);
+          setNnueProgress({
+            completed: data.completed,
+            total: data.total,
+            loss: data.loss,
+            nps: data.nps,
+            bufferSize: data.bufferSize,
+          });
+          setStats(data.stats);
+          setSnapshotName(getDefaultCheckpointName(data.stats.generation));
+          break;
+        }
+
+        case 'NNUE_TRAIN_COMPLETE': {
+          setIsNNUETraining(false);
+          setNnueProgress(null);
+          const deserialized = deserializeWeights(data.nnueWeights);
+          setCurrentNNUEWeights(deserialized);
+          setStats(data.stats);
+          setSnapshotName(getDefaultCheckpointName(data.stats.generation));
+          saveNNUECheckpoint(
+            getDefaultCheckpointName(data.stats.generation),
+            data.stats.generation,
+            data.nnueWeights,
+            data.stats
+          );
+          setCheckpoints(getStoredCheckpoints());
+          if (soundEnabledRef.current) sounds.playVictory();
+          break;
+        }
+
         case 'LIVE_STEP': {
           if (!data.san) {
             setIsPlayingLive(false);
@@ -576,14 +748,25 @@ export const IntransitiveStudio: React.FC = () => {
           }
 
           const nextGame = new IntransitiveGame(data.fenAfter);
-          setGame(nextGame);
-          setLastMove(data.move);
-          setSelectedSquare(null);
-          setMoveHistory((prev) => [
-            ...prev,
-            { move: data.move, san: data.san, fen: data.fenAfter },
-          ]);
-          setHistoryIndex((prev) => prev + 1);
+          if (activeTabRef.current === 'play') {
+            setPlayGame(nextGame);
+            setPlayLastMove(data.move);
+            setPlaySelectedSquare(null);
+            setPlayMoveHistory((prev) => [
+              ...prev,
+              { move: data.move, san: data.san, fen: data.fenAfter },
+            ]);
+            setPlayHistoryIndex((prev) => prev + 1);
+          } else {
+            setArenaGame(nextGame);
+            setArenaLastMove(data.move);
+            setArenaSelectedSquare(null);
+            setArenaMoveHistory((prev) => [
+              ...prev,
+              { move: data.move, san: data.san, fen: data.fenAfter },
+            ]);
+            setArenaHistoryIndex((prev) => prev + 1);
+          }
           setAnalysisTelemetry(null);
 
           // Audio cues
@@ -621,6 +804,9 @@ export const IntransitiveStudio: React.FC = () => {
 
         case 'ARENA_RESULT': {
           setIsTournamentPaused(false);
+          if (data.completedGames) {
+            setTournamentGames(data.completedGames);
+          }
           if (data.isCancelled) {
             // Early stop: drain queue immediately and display partial results
             zoomQueueRef.current = [];
@@ -732,8 +918,8 @@ export const IntransitiveStudio: React.FC = () => {
       if (lastNext) {
         if (lastNext.gameIndex && lastNext.gameIndex !== currentZoomGameRef.current) {
           currentZoomGameRef.current = lastNext.gameIndex;
-          setMoveHistory([]);
-          setHistoryIndex(-1);
+          setArenaMoveHistory([]);
+          setArenaHistoryIndex(-1);
         }
 
         if (lastNext.currentWinsA !== undefined || lastNext.totalGames !== undefined) {
@@ -748,13 +934,13 @@ export const IntransitiveStudio: React.FC = () => {
           });
         }
 
-        setGame(new IntransitiveGame(lastNext.fen));
-        setLastMove(lastNext.move);
-        setMoveHistory((prev) => [
+        setArenaGame(new IntransitiveGame(lastNext.fen));
+        setArenaLastMove(lastNext.move);
+        setArenaMoveHistory((prev) => [
           ...prev,
           { move: lastNext!.move, san: lastNext!.san, fen: lastNext!.fen },
         ]);
-        setHistoryIndex((prev) => prev + 1);
+        setArenaHistoryIndex((prev) => prev + 1);
 
         if (soundEnabledRef.current && lastNext.isOver) {
           sounds.playCapture();
@@ -762,6 +948,9 @@ export const IntransitiveStudio: React.FC = () => {
       } else if (pendingTournamentResultRef.current) {
         const finalResult = pendingTournamentResultRef.current;
         pendingTournamentResultRef.current = null;
+        if (finalResult.completedGames) {
+          setTournamentGames(finalResult.completedGames);
+        }
         setTournamentResult(finalResult);
         setArenaLiveResults((prev) =>
           prev
@@ -792,7 +981,7 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Visual Arena Live playback loop: alternates between Fighter A (Blue) and Fighter B (Red)
   useEffect(() => {
-    if (!isPlayingLive || activeTab !== 'arena' || game.isTerminal().isOver) {
+    if (!isPlayingLive || activeTab !== 'arena' || arenaGame.isTerminal().isOver) {
       if (timerRef.current) clearTimeout(timerRef.current);
       return;
     }
@@ -800,15 +989,17 @@ export const IntransitiveStudio: React.FC = () => {
     timerRef.current = setTimeout(() => {
       if (workerRef.current && isPlayingLive) {
         // In Visual Arena, Blue moves using Fighter A, Red moves using Fighter B
-        const isBlue = game.activePlayer === PLAYER_BLUE;
+        const isBlue = arenaGame.activePlayer === PLAYER_BLUE;
         const activeFighterId = isBlue ? fighterAId : fighterBId;
         const activeDepth = isBlue ? fighterADepth : fighterBDepth;
         const fighterWeights = getWeightsById(activeFighterId);
+        const isNNUE = 'w0' in fighterWeights;
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
-          currentFen: game.toFEN(),
+          currentFen: arenaGame.toFEN(),
           searchDepth: activeDepth,
-          customWeights: fighterWeights,
+          customWeights: !isNNUE ? (fighterWeights as EvaluationWeights) : undefined,
+          customNNUEWeights: isNNUE ? serializeWeights(fighterWeights as NNUEWeights) : undefined,
         });
       }
     }, delayMs);
@@ -816,7 +1007,7 @@ export const IntransitiveStudio: React.FC = () => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPlayingLive, activeTab, game, delayMs, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
+  }, [isPlayingLive, activeTab, arenaGame, delayMs, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
 
   const handleResetGame = useCallback(() => {
     if (analysisWorkerRef.current) {
@@ -829,87 +1020,101 @@ export const IntransitiveStudio: React.FC = () => {
     setArenaViewMode('notation');
     zoomQueueRef.current = [];
     pendingTournamentResultRef.current = null;
+
     const freshGame = new IntransitiveGame();
-    setGame(freshGame);
-    setSelectedSquare(null);
-    setLastMove(null);
-    setMoveHistory([]);
-    setHistoryIndex(-1);
+    if (activeTabRef.current === 'play') {
+      setPlayGame(freshGame);
+      setPlaySelectedSquare(null);
+      setPlayLastMove(null);
+      setPlayMoveHistory([]);
+      setPlayHistoryIndex(-1);
+    } else {
+      setArenaGame(freshGame);
+      setArenaSelectedSquare(null);
+      setArenaLastMove(null);
+      setArenaMoveHistory([]);
+      setArenaHistoryIndex(-1);
+    }
     setShowAccuracyView(true);
   }, []);
+
+  // Jump to specific ply in move history
+  const handleSelectHistoryIndex = useCallback((index: number) => {
+    const isPlay = activeTabRef.current === 'play';
+    const history = isPlay ? playMoveHistory : arenaMoveHistory;
+    const setG = isPlay ? setPlayGame : setArenaGame;
+    const setLastM = isPlay ? setPlayLastMove : setArenaLastMove;
+    const setIdx = isPlay ? setPlayHistoryIndex : setArenaHistoryIndex;
+
+    if (index === -1) {
+      const startG = new IntransitiveGame();
+      setG(startG);
+      setLastM(null);
+      setIdx(-1);
+    } else if (index >= 0 && index < history.length) {
+      const target = history[index];
+      const g = new IntransitiveGame(target.fen);
+      setG(g);
+      setLastM(target.move);
+      setIdx(index);
+    }
+  }, [playMoveHistory, arenaMoveHistory]);
 
   // Step Controls
   const handleStepForward = useCallback(() => {
     setArenaViewMode('notation');
-    if (historyIndex < moveHistory.length - 1) {
-      const nextIndex = historyIndex + 1;
-      const target = moveHistory[nextIndex];
-      const g = new IntransitiveGame(target.fen);
-      setGame(g);
-      setLastMove(target.move);
-      setHistoryIndex(nextIndex);
+    const isPlay = activeTab === 'play';
+    const history = isPlay ? playMoveHistory : arenaMoveHistory;
+    const currentIndex = isPlay ? playHistoryIndex : arenaHistoryIndex;
+
+    if (currentIndex < history.length - 1) {
+      const nextIndex = currentIndex + 1;
+      handleSelectHistoryIndex(nextIndex);
     } else {
       // Ask worker for 1 live step based on current active fighter
       if (workerRef.current && !finalGameStatus.isOver) {
-        const isBlue = game.activePlayer === PLAYER_BLUE;
+        const isBlue = activeGame.activePlayer === PLAYER_BLUE;
         const activeFighterId = isBlue ? fighterAId : fighterBId;
         const activeDepth = isBlue ? fighterADepth : fighterBDepth;
         const watchWeights = getWeightsById(activeFighterId);
+        const isNNUE = 'w0' in watchWeights;
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
-          currentFen: game.toFEN(),
+          currentFen: activeGame.toFEN(),
           searchDepth: activeDepth,
-          customWeights: watchWeights,
+          customWeights: !isNNUE ? (watchWeights as EvaluationWeights) : undefined,
+          customNNUEWeights: isNNUE ? serializeWeights(watchWeights as NNUEWeights) : undefined,
         });
       }
     }
-  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById, finalGameStatus.isOver]);
-
-  // Jump to specific ply in move history
-  const handleSelectHistoryIndex = useCallback((index: number) => {
-    if (index === -1) {
-      const startG = new IntransitiveGame();
-      setGame(startG);
-      setLastMove(null);
-      setHistoryIndex(-1);
-    } else if (index >= 0 && index < moveHistory.length) {
-      const target = moveHistory[index];
-      const g = new IntransitiveGame(target.fen);
-      setGame(g);
-      setLastMove(target.move);
-      setHistoryIndex(index);
-    }
-  }, [moveHistory]);
+  }, [activeTab, playMoveHistory, arenaMoveHistory, playHistoryIndex, arenaHistoryIndex, handleSelectHistoryIndex, finalGameStatus.isOver, activeGame, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
 
   const handleStepBackward = useCallback(() => {
     setArenaViewMode('notation');
-    if (historyIndex > 0) {
-      const prevIndex = historyIndex - 1;
-      const target = moveHistory[prevIndex];
-      const g = new IntransitiveGame(target.fen);
-      setGame(g);
-      setLastMove(target.move);
-      setHistoryIndex(prevIndex);
-    } else if (historyIndex === 0) {
+    const currentIndex = activeHistoryIndex;
+    if (currentIndex > 0) {
+      const prevIndex = currentIndex - 1;
+      handleSelectHistoryIndex(prevIndex);
+    } else if (currentIndex === 0) {
       handleSelectHistoryIndex(-1);
     }
-  }, [historyIndex, moveHistory, handleSelectHistoryIndex]);
+  }, [activeHistoryIndex, handleSelectHistoryIndex]);
 
   // Post-Game Accuracy & Evaluation Analysis (evaluated via master model)
   const gameAccuracyAnalysis = useMemo(() => {
-    if (!finalGameStatus.isOver || moveHistory.length === 0) return null;
+    if (!finalGameStatus.isOver || activeMoveHistory.length === 0) return null;
     const evalWeights = getWeightsById(evalModelId);
     return analyzeGameAccuracy(
-      moveHistory,
+      activeMoveHistory,
       evalWeights,
       finalGameStatus.winner,
       finalGameStatus.reason
     );
-  }, [finalGameStatus.isOver, finalGameStatus.winner, finalGameStatus.reason, moveHistory, evalModelId, getWeightsById]);
+  }, [finalGameStatus.isOver, finalGameStatus.winner, finalGameStatus.reason, activeMoveHistory, evalModelId, getWeightsById]);
 
   // Human Move Handler
   const handleHumanMove = useCallback((move: Move) => {
-    const nextGame = game.clone();
+    const nextGame = playGame.clone();
     const san = nextGame.formatMoveSAN(move);
     const ok = nextGame.makeMove(move);
     if (!ok) return;
@@ -920,11 +1125,11 @@ export const IntransitiveStudio: React.FC = () => {
     }
 
     const fenAfter = nextGame.toFEN();
-    setGame(nextGame);
-    setLastMove(move);
-    setSelectedSquare(null);
-    setMoveHistory((prev) => [...prev, { move, san, fen: fenAfter }]);
-    setHistoryIndex((prev) => prev + 1);
+    setPlayGame(nextGame);
+    setPlayLastMove(move);
+    setPlaySelectedSquare(null);
+    setPlayMoveHistory((prev) => [...prev, { move, san, fen: fenAfter }]);
+    setPlayHistoryIndex((prev) => prev + 1);
     setAnalysisTelemetry(null);
 
     // Cancel and immediately terminate any running background analysis worker with 0 latency
@@ -936,17 +1141,19 @@ export const IntransitiveStudio: React.FC = () => {
     // Trigger AI response using selected opponent's weights and configured depth/thinkTime
     if (activeTab === 'play' && !nextGame.isTerminal().isOver) {
       const opponentWeights = getWeightsById(selectedOpponentId);
+      const isOppNNUE = 'w0' in opponentWeights;
       if (workerRef.current) {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: fenAfter,
           searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
           thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
-          customWeights: opponentWeights,
+          customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
+          customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
         });
       }
     }
-  }, [game, soundEnabled, activeTab, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
+  }, [playGame, soundEnabled, activeTab, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
   // Start a fresh Human Game
   const handleStartHumanGame = useCallback((color: 'blue' | 'red', opponentId: string) => {
@@ -959,28 +1166,30 @@ export const IntransitiveStudio: React.FC = () => {
     setSelectedOpponentId(opponentId);
     setIsPlayingLive(false);
     const freshGame = new IntransitiveGame();
-    setGame(freshGame);
-    setSelectedSquare(null);
-    setLastMove(null);
-    setMoveHistory([]);
-    setHistoryIndex(-1);
+    setPlayGame(freshGame);
+    setPlaySelectedSquare(null);
+    setPlayLastMove(null);
+    setPlayMoveHistory([]);
+    setPlayHistoryIndex(-1);
 
     // Auto-adjust board flip if human plays Red
     if (color === 'red') {
-      setIsBoardFlipped(true);
+      setPlayIsBoardFlipped(true);
       // AI plays first as Blue
       if (workerRef.current) {
         const opponentWeights = getWeightsById(opponentId);
+        const isOppNNUE = 'w0' in opponentWeights;
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: freshGame.toFEN(),
           searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
           thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
-          customWeights: opponentWeights,
+          customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
+          customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
         });
       }
     } else {
-      setIsBoardFlipped(false);
+      setPlayIsBoardFlipped(false);
     }
   }, [playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
@@ -991,13 +1200,166 @@ export const IntransitiveStudio: React.FC = () => {
       analysisWorkerRef.current = null;
     }
     setAnalysisTelemetry(null);
-    if (historyIndex >= 1) {
-      const targetIndex = historyIndex - 2 >= 0 ? historyIndex - 2 : -1;
+    if (playHistoryIndex >= 1) {
+      const targetIndex = playHistoryIndex - 2 >= 0 ? playHistoryIndex - 2 : -1;
       handleSelectHistoryIndex(targetIndex);
-    } else if (historyIndex === 0) {
+    } else if (playHistoryIndex === 0) {
       handleSelectHistoryIndex(-1);
     }
-  }, [historyIndex, handleSelectHistoryIndex]);
+  }, [playHistoryIndex, handleSelectHistoryIndex]);
+
+  // Generate standard PGN for the active match
+  const getActiveGamePGN = useCallback(() => {
+    const isPlay = activeTab === 'play';
+    let blueName = 'Player';
+    let redName = 'Intransitive AI';
+    if (isPlay) {
+      const oppName = checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'Computer';
+      if (humanColor === 'blue') {
+        blueName = 'Human';
+        redName = oppName;
+      } else {
+        blueName = oppName;
+        redName = 'Human';
+      }
+    } else {
+      blueName = allArenaCheckpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A';
+      redName = allArenaCheckpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B';
+    }
+
+    const history = isPlay ? playMoveHistory : arenaMoveHistory;
+    const result: string = !finalGameStatus.isOver
+      ? '*'
+      : finalGameStatus.winner === 'draw'
+      ? '1/2-1/2'
+      : finalGameStatus.winner === PLAYER_BLUE
+      ? '1-0'
+      : finalGameStatus.winner === PLAYER_RED
+      ? '0-1'
+      : '*';
+
+    return generateGamePGN({
+      event: isPlay ? 'Human vs AI Exhibition' : 'Arena Exhibition Match',
+      site: 'Intransitive Studio',
+      white: blueName,
+      black: redName,
+      result,
+      moves: history.map((h) => ({ san: h.san, move: h.move })),
+      termination: finalGameStatus.reason ?? undefined,
+    });
+  }, [
+    activeTab,
+    humanColor,
+    selectedOpponentId,
+    checkpoints,
+    allArenaCheckpoints,
+    fighterAId,
+    fighterBId,
+    playMoveHistory,
+    arenaMoveHistory,
+    finalGameStatus,
+  ]);
+
+  // Copy active game PGN to clipboard
+  const handleCopyPGN = useCallback(() => {
+    const pgn = getActiveGamePGN();
+    navigator.clipboard.writeText(pgn);
+    setPgnCopied(true);
+    setTimeout(() => setPgnCopied(false), 2000);
+  }, [getActiveGamePGN]);
+
+  // Export current single game PGN file
+  const handleExportPGN = useCallback(() => {
+    const pgn = getActiveGamePGN();
+    const isPlay = activeTab === 'play';
+    const tag = isPlay ? 'human_vs_ai' : 'arena_exhibition';
+    downloadTextFile(`intransitive_${tag}_${Date.now()}.pgn`, pgn);
+  }, [getActiveGamePGN, activeTab]);
+
+  // Copy current game FEN
+  const handleCopyFEN = useCallback(() => {
+    const currentFen = activeGame.toFEN();
+    navigator.clipboard.writeText(currentFen);
+    setFenCopied(true);
+    setTimeout(() => setFenCopied(false), 2000);
+  }, [activeGame]);
+
+  // Open Export / Position Modal
+  const handleOpenExportModal = useCallback((defaultTab: 'fen' | 'pgn' = 'fen') => {
+    setExportModalTab(defaultTab);
+    setCustomFenInput(activeGame.toFEN());
+    setFenError(null);
+    setShowExportModal(true);
+  }, [activeGame]);
+
+  // Load custom FEN into active mode
+  const handleLoadFEN = useCallback((customFen: string) => {
+    try {
+      const trimmed = customFen.trim();
+      const testGame = new IntransitiveGame(trimmed);
+
+      if (analysisWorkerRef.current) {
+        analysisWorkerRef.current.terminate();
+        analysisWorkerRef.current = null;
+      }
+      setAnalysisTelemetry(null);
+
+      if (activeTab === 'play') {
+        setPlayGame(testGame);
+        setPlaySelectedSquare(null);
+        setPlayLastMove(null);
+        setPlayMoveHistory([]);
+        setPlayHistoryIndex(-1);
+
+        // Trigger opponent AI move if it's the AI's turn
+        const isHuman = (humanColor === 'blue' && testGame.activePlayer === PLAYER_BLUE) ||
+                        (humanColor === 'red' && testGame.activePlayer === PLAYER_RED);
+
+        if (!isHuman && !testGame.isTerminal().isOver) {
+          if (workerRef.current) {
+            const opponentWeights = getWeightsById(selectedOpponentId);
+            const isOppNNUE = 'w0' in opponentWeights;
+            workerRef.current.postMessage({
+              type: 'STEP_LIVE',
+              currentFen: testGame.toFEN(),
+              searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
+              thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
+              customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
+              customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
+            });
+          }
+        }
+      } else {
+        setArenaGame(testGame);
+        setArenaSelectedSquare(null);
+        setArenaLastMove(null);
+        setArenaMoveHistory([]);
+        setArenaHistoryIndex(-1);
+      }
+
+      setFenError(null);
+      setShowExportModal(false);
+    } catch (err: unknown) {
+      setFenError((err as Error)?.message || 'Invalid Intransitive FEN string');
+    }
+  }, [activeTab, humanColor, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
+
+  // Export all tournament games to PGN
+  const handleExportTournamentPGN = useCallback(() => {
+    if (tournamentGames.length === 0) return;
+    const nameA = allArenaCheckpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A';
+    const nameB = allArenaCheckpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B';
+    const tournamentPGN = generateTournamentPGN({
+      fighterAName: nameA,
+      fighterBName: nameB,
+      event: `Tournament: ${nameA} vs ${nameB}`,
+      games: tournamentGames,
+    });
+    downloadTextFile(
+      `tournament_${nameA.replace(/[^a-zA-Z0-9]/g, '_')}_vs_${nameB.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}.pgn`,
+      tournamentPGN
+    );
+  }, [tournamentGames, allArenaCheckpoints, fighterAId, fighterBId]);
 
   // Turbo Actions
   const handleStartTurbo = useCallback((totalGames: number) => {
@@ -1022,6 +1384,27 @@ export const IntransitiveStudio: React.FC = () => {
     setIsTurboTraining(false);
   }, []);
 
+  const handleStartNNUE = useCallback((totalGames: number) => {
+    setIsPlayingLive(false);
+    setIsNNUETraining(true);
+    if (workerRef.current) {
+      workerRef.current.postMessage({
+        type: 'START_NNUE_TRAIN',
+        totalGames,
+        searchDepth: trainingSearchDepth,
+        batchSize: 128,
+        learningRate: 0.001,
+      });
+    }
+  }, [trainingSearchDepth]);
+
+  const handleStopNNUE = useCallback(() => {
+    if (workerRef.current) {
+      workerRef.current.postMessage({ type: 'STOP_NNUE_TRAIN' });
+    }
+    setIsNNUETraining(false);
+  }, []);
+
   const handleResetTraining = useCallback(() => {
     if (workerRef.current) {
       workerRef.current.postMessage({ type: 'RESET_TRAINING' });
@@ -1034,17 +1417,49 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Baseline Loading & Top Bar Snapshot Handlers
   const handleLoadBaseline = useCallback((id: string) => {
-    let newW: EvaluationWeights;
-    let newStats: TrainingStats;
+    let newW: EvaluationWeights = weights;
+    let newStats: TrainingStats = stats;
 
-    if (id === 'preset-gen-0') {
+    if (id === 'preset-nnue-500k') {
+      setCurrentNNUEWeights(PRESET_NNUE_500K_WEIGHTS);
+      setTrainerArchitecture('nnue');
+      setSelectedBaselineId('preset-nnue-500k');
+      const preset500k = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-nnue-500k');
+      const s = preset500k?.stats ?? createInitialStats(500000);
+      setStats(s);
+      setLastLoadedOrSavedGen(s.generation);
+      setSnapshotName(getDefaultCheckpointName(s.generation));
+      return;
+    } else if (id === 'preset-nnue-10k') {
+      setCurrentNNUEWeights(PRESET_NNUE_10K_WEIGHTS);
+      setTrainerArchitecture('nnue');
+      setSelectedBaselineId('preset-nnue-10k');
+      const preset10k = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-nnue-10k');
+      const s = preset10k?.stats ?? createInitialStats(10000);
+      setStats(s);
+      setLastLoadedOrSavedGen(s.generation);
+      setSnapshotName(getDefaultCheckpointName(s.generation));
+      return;
+    } else if (id === 'preset-nnue-master') {
+      setCurrentNNUEWeights(PRESET_NNUE_MASTER_WEIGHTS);
+      setTrainerArchitecture('nnue');
+      setSelectedBaselineId('preset-nnue-master');
+      const masterPreset = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-nnue-master');
+      const s = masterPreset?.stats ?? createInitialStats(5000);
+      setStats(s);
+      setLastLoadedOrSavedGen(s.generation);
+      setSnapshotName(getDefaultCheckpointName(s.generation));
+      return;
+    } else if (id === 'preset-gen-0') {
       newW = createZeroWeights();
       newStats = createInitialStats(0);
+      setTrainerArchitecture('linear');
       setSelectedBaselineId('preset-gen-0');
     } else if (id === 'preset-heuristic-master') {
       newW = createHeuristicWeights();
       const masterPreset = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-heuristic-master');
       newStats = masterPreset?.stats ?? createInitialStats(1000);
+      setTrainerArchitecture('linear');
       setSelectedBaselineId('preset-heuristic-master');
     } else if (id === 'current') {
       newW = weights;
@@ -1053,7 +1468,13 @@ export const IntransitiveStudio: React.FC = () => {
     } else {
       const cp = checkpoints.find((c) => c.id === id);
       if (cp) {
-        newW = cp.weights;
+        if (cp.modelType === 'nnue' && cp.nnueWeights) {
+          setCurrentNNUEWeights(deserializeWeights(cp.nnueWeights));
+          setTrainerArchitecture('nnue');
+        } else if (cp.weights) {
+          newW = cp.weights;
+          setTrainerArchitecture('linear');
+        }
         newStats = cp.stats ?? createInitialStats(cp.generation);
         setSelectedBaselineId(cp.id);
       } else {
@@ -1084,11 +1505,16 @@ export const IntransitiveStudio: React.FC = () => {
 
   const handleHeaderSaveSnapshot = useCallback(() => {
     const finalName = snapshotName.trim() || getDefaultCheckpointName(stats.generation);
-    handleSaveCurrentCheckpoint(finalName);
+    if (trainerArchitecture === 'nnue') {
+      saveNNUECheckpoint(finalName, stats.generation, serializeWeights(currentNNUEWeights), stats);
+      setCheckpoints(getStoredCheckpoints());
+    } else {
+      handleSaveCurrentCheckpoint(finalName);
+    }
     setLastLoadedOrSavedGen(stats.generation);
     setIsSnapshotSaved(true);
     setTimeout(() => setIsSnapshotSaved(false), 2500);
-  }, [snapshotName, stats.generation, handleSaveCurrentCheckpoint]);
+  }, [snapshotName, stats, trainerArchitecture, currentNNUEWeights, handleSaveCurrentCheckpoint]);
 
   const isCustomInMemory = useMemo(() => {
     if (selectedBaselineId === 'current') return true;
@@ -1213,8 +1639,11 @@ export const IntransitiveStudio: React.FC = () => {
     if (candidateMoves.length > 0) {
       return candidateMoves[0].score;
     }
-    return evaluate(game, activeEvalModel.weights);
-  }, [candidateMoves, game, activeEvalModel]);
+    const modelWeights = activeEvalModel.modelType === 'nnue' && activeEvalModel.nnueWeights
+      ? activeEvalModel.nnueWeights
+      : (activeEvalModel.weights ?? weights);
+    return evaluateAny(activeGame, modelWeights);
+  }, [candidateMoves, activeGame, activeEvalModel, weights]);
 
   return (
     <div className="intransitive-studio-root">
@@ -1307,9 +1736,11 @@ export const IntransitiveStudio: React.FC = () => {
                   className="intransitive-dropdown mini"
                 >
                   <optgroup label="Trained AI Models">
+                    <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
                     <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
-                    <option value="preset-intermediate">🥈 Intermediate (TD-Leaf Trained)</option>
-                    <option value="preset-novice">🥉 Novice (TD-Leaf Trained)</option>
+                    <option value="preset-advanced">🥈 Advanced (TD-Leaf Trained)</option>
+                    <option value="preset-intermediate">🥉 Intermediate (TD-Leaf Trained)</option>
+                    <option value="preset-novice">🎖️ Novice (TD-Leaf Trained)</option>
                   </optgroup>
                   <optgroup label="Benchmarks & Baselines">
                     <option value="preset-heuristic-master">🏆 Heuristic Master (Boss)</option>
@@ -1454,9 +1885,11 @@ export const IntransitiveStudio: React.FC = () => {
                 title="Fighter A (Plays Blue)"
               >
                 <optgroup label="Trained AI Models">
-                  <option value="preset-novice">🥉 Novice (Trained)</option>
-                  <option value="preset-intermediate">🥈 Intermediate (Trained)</option>
+                  <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
                   <option value="preset-master">🥇 Master (Trained)</option>
+                  <option value="preset-advanced">🥈 Advanced (Trained)</option>
+                  <option value="preset-intermediate">🥉 Intermediate (Trained)</option>
+                  <option value="preset-novice">🎖️ Novice (Trained)</option>
                 </optgroup>
                 <optgroup label="Benchmarks & Baselines">
                   <option value="current">🤖 Current Model (Gen {stats.generation})</option>
@@ -1488,9 +1921,11 @@ export const IntransitiveStudio: React.FC = () => {
                 title="Fighter B (Plays Red)"
               >
                 <optgroup label="Trained AI Models">
+                  <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
                   <option value="preset-master">🥇 Master (Trained)</option>
-                  <option value="preset-intermediate">🥈 Intermediate (Trained)</option>
-                  <option value="preset-novice">🥉 Novice (Trained)</option>
+                  <option value="preset-advanced">🥈 Advanced (Trained)</option>
+                  <option value="preset-intermediate">🥉 Intermediate (Trained)</option>
+                  <option value="preset-novice">🎖️ Novice (Trained)</option>
                 </optgroup>
                 <optgroup label="Benchmarks & Baselines">
                   <option value="preset-heuristic-master">🏆 Heuristic Master</option>
@@ -1533,9 +1968,11 @@ export const IntransitiveStudio: React.FC = () => {
                 className="intransitive-dropdown mini"
               >
                 <optgroup label="Trained Baselines">
-                  <option value="preset-master">🥇 Master (TD-Leaf Gen 800)</option>
-                  <option value="preset-intermediate">🥈 Intermediate (TD-Leaf Gen 300)</option>
-                  <option value="preset-novice">🥉 Novice (TD-Leaf Gen 1300)</option>
+                  <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled Gen 500k)</option>
+                  <option value="preset-master">🥇 Master (TD-Leaf Gen 1645)</option>
+                  <option value="preset-advanced">🥈 Advanced (TD-Leaf Gen 800)</option>
+                  <option value="preset-intermediate">🥉 Intermediate (TD-Leaf Gen 300)</option>
+                  <option value="preset-novice">🎖️ Novice (TD-Leaf Gen 1300)</option>
                 </optgroup>
                 <optgroup label="From Scratch / Heuristic">
                   <option value="preset-gen-0">👶 None / From Scratch (Tabula Rasa Gen 0)</option>
@@ -1682,11 +2119,19 @@ export const IntransitiveStudio: React.FC = () => {
             onResetTraining={handleResetTraining}
             trainingSearchDepth={trainingSearchDepth}
             onChangeTrainingSearchDepth={setTrainingSearchDepth}
+            trainerArchitecture={trainerArchitecture}
+            onChangeTrainerArchitecture={setTrainerArchitecture}
+            isNNUETraining={isNNUETraining}
+            nnueProgress={nnueProgress}
+            onStartNNUE={handleStartNNUE}
+            onStopNNUE={handleStopNNUE}
           />
 
           <InterpretabilityCard
             weights={weights}
             history={stats.history}
+            nnueWeights={currentNNUEWeights}
+            isNNUEMode={trainerArchitecture === 'nnue'}
           />
         </div>
       ) : (
@@ -1699,7 +2144,7 @@ export const IntransitiveStudio: React.FC = () => {
               <div className="intransitive-turn-info">
                 <span
                   className={`intransitive-turn-circle ${
-                    game.activePlayer === PLAYER_BLUE ? 'blue' : 'red'
+                    activeGame.activePlayer === PLAYER_BLUE ? 'blue' : 'red'
                   }`}
                 />
                 <span className="intransitive-turn-text">
@@ -1713,7 +2158,7 @@ export const IntransitiveStudio: React.FC = () => {
                       : playOpponentMode === 'time'
                       ? `Computer is thinking (${playOpponentTimeSec}s)...`
                       : `Computer is thinking (Depth ${playOpponentDepth})...`
-                    : `${game.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'} to move (Ply ${game.halfmoveClock + 1})`}
+                    : `${activeGame.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'} to move (Ply ${activeGame.halfmoveClock + 1})`}
                 </span>
               </div>
 
@@ -1754,8 +2199,8 @@ export const IntransitiveStudio: React.FC = () => {
                   <span className="intransitive-fighter-color-label">Blue:</span>
                   <span className="intransitive-fighter-color-name">
                     {(arenaLiveResults.fighterAIsBlue !== false
-                      ? (checkpoints.find((c) => c.id === fighterAId)?.name?.split(' ')[0] || 'Fighter A')
-                      : (checkpoints.find((c) => c.id === fighterBId)?.name?.split(' ')[0] || 'Fighter B')
+                      ? (allArenaCheckpoints.find((c) => c.id === fighterAId)?.name?.split(' ')[0] || 'Fighter A')
+                      : (allArenaCheckpoints.find((c) => c.id === fighterBId)?.name?.split(' ')[0] || 'Fighter B')
                     )}
                   </span>
                 </div>
@@ -1767,8 +2212,8 @@ export const IntransitiveStudio: React.FC = () => {
                   <span className="intransitive-fighter-color-label">Red:</span>
                   <span className="intransitive-fighter-color-name">
                     {(arenaLiveResults.fighterAIsBlue !== false
-                      ? (checkpoints.find((c) => c.id === fighterBId)?.name?.split(' ')[0] || 'Fighter B')
-                      : (checkpoints.find((c) => c.id === fighterAId)?.name?.split(' ')[0] || 'Fighter A')
+                      ? (allArenaCheckpoints.find((c) => c.id === fighterBId)?.name?.split(' ')[0] || 'Fighter B')
+                      : (allArenaCheckpoints.find((c) => c.id === fighterAId)?.name?.split(' ')[0] || 'Fighter A')
                     )}
                   </span>
                 </div>
@@ -1777,13 +2222,13 @@ export const IntransitiveStudio: React.FC = () => {
 
             {/* Interactive 9x9 Board with Candidate Arrows (in Human Play) */}
             <IntransitiveBoard
-              game={game}
-              selectedSquare={selectedSquare}
-              onSelectSquare={setSelectedSquare}
+              game={activeGame}
+              selectedSquare={activeSelectedSquare}
+              onSelectSquare={setActiveSelectedSquare}
               onMakeMove={handleHumanMove}
-              lastMove={lastMove}
+              lastMove={activeLastMove}
               isInteractive={isHumanTurn}
-              flipped={isBoardFlipped}
+              flipped={activeIsBoardFlipped}
               arrows={activeTab === 'play' && isAnalysisEnabled ? candidateMoves.slice(0, analysisMaxRows) : []}
             />
 
@@ -1794,7 +2239,7 @@ export const IntransitiveStudio: React.FC = () => {
                   type="button"
                   onClick={() => handleStartHumanGame(humanColor, selectedOpponentId)}
                   className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.8rem', fontSize: '0.75rem' }}
+                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
                 >
                   <RotateCcw size={14} /> New Game
                 </button>
@@ -1802,9 +2247,9 @@ export const IntransitiveStudio: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleUndoHumanMove}
-                  disabled={historyIndex < 0}
+                  disabled={playHistoryIndex < 0}
                   className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.8rem', fontSize: '0.75rem' }}
+                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
                   title="Undo previous human and AI move"
                 >
                   <Undo2 size={14} /> Undo Move
@@ -1812,12 +2257,42 @@ export const IntransitiveStudio: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => setIsBoardFlipped(!isBoardFlipped)}
+                  onClick={() => setActiveIsBoardFlipped(!activeIsBoardFlipped)}
                   className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.8rem', fontSize: '0.75rem' }}
+                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
                   title="Flip board view"
                 >
                   <ArrowUpDown size={14} /> Flip Board
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyFEN}
+                  className="intransitive-btn-secondary"
+                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
+                  title="Copy current position FEN to clipboard"
+                >
+                  {fenCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {fenCopied ? 'Copied FEN' : 'Copy FEN'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleCopyPGN}
+                  className="intransitive-btn-secondary"
+                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
+                  title="Copy match moves as PGN"
+                >
+                  {pgnCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {pgnCopied ? 'Copied PGN' : 'Copy PGN'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenExportModal('fen')}
+                  className="intransitive-btn-secondary"
+                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
+                  title="Export or import custom FEN position or PGN notation"
+                >
+                  <FileText size={14} /> FEN / PGN...
                 </button>
               </div>
             )}
@@ -1869,27 +2344,32 @@ export const IntransitiveStudio: React.FC = () => {
                       handleResetGame();
                       setArenaViewMode('notation');
                     }}
-                    canStepBack={historyIndex >= 0}
-                    canStepForward={!finalGameStatus.isOver || historyIndex < moveHistory.length - 1}
+                    canStepBack={arenaHistoryIndex >= 0}
+                    canStepForward={!finalGameStatus.isOver || arenaHistoryIndex < arenaMoveHistory.length - 1}
                     delayMs={delayMs}
                     onChangeDelay={setDelayMs}
-                    fighterAName={checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
-                    fighterBName={checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
+                    fighterAName={allArenaCheckpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
+                    fighterBName={allArenaCheckpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
                     fighterADepth={fighterADepth}
                     fighterBDepth={fighterBDepth}
                     fighterAMode={fighterAMode}
                     fighterBMode={fighterBMode}
                     fighterATimeSec={fighterATimeSec}
                     fighterBTimeSec={fighterBTimeSec}
-                    currentPly={historyIndex + 1}
-                    totalPlies={moveHistory.length}
+                    currentPly={arenaHistoryIndex + 1}
+                    totalPlies={arenaMoveHistory.length}
                     isGameOver={finalGameStatus.isOver}
                     winner={finalGameStatus.winner}
                     reason={finalGameStatus.reason}
                     onJumpToStart={() => handleSelectHistoryIndex(-1)}
-                    onJumpToEnd={() => handleSelectHistoryIndex(moveHistory.length - 1)}
+                    onJumpToEnd={() => handleSelectHistoryIndex(arenaMoveHistory.length - 1)}
                     onChangeFighterADepth={setFighterADepth}
                     onChangeFighterBDepth={setFighterBDepth}
+                    onCopyFEN={handleCopyFEN}
+                    onCopyPGN={handleCopyPGN}
+                    onExportPGN={handleExportPGN}
+                    fenCopied={fenCopied}
+                    pgnCopied={pgnCopied}
                   />
                 ) : (
                   <>
@@ -1905,21 +2385,21 @@ export const IntransitiveStudio: React.FC = () => {
                         winsA={arenaLiveResults?.winsA ?? 0}
                         winsB={arenaLiveResults?.winsB ?? 0}
                         draws={arenaLiveResults?.draws ?? 0}
-                        fighterAName={checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
-                        fighterBName={checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
+                        fighterAName={allArenaCheckpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
+                        fighterBName={allArenaCheckpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
                         fighterADepth={fighterADepth}
                         fighterBDepth={fighterBDepth}
                         fighterAMode={fighterAMode}
                         fighterBMode={fighterBMode}
                         fighterATimeSec={fighterATimeSec}
                         fighterBTimeSec={fighterBTimeSec}
-                        currentPly={moveHistory.length}
-                        lastSan={lastMove ? game.formatMoveSAN(lastMove) : ''}
+                        currentPly={arenaMoveHistory.length}
+                        lastSan={arenaLastMove ? arenaGame.formatMoveSAN(arenaLastMove) : ''}
                         onToggleView={() => setArenaViewMode('notation')}
                       />
                     ) : (
                       <ArenaCard
-                        checkpoints={checkpoints}
+                        checkpoints={allArenaCheckpoints}
                         currentGeneration={stats.generation}
                         fighterAId={fighterAId}
                         fighterBId={fighterBId}
@@ -1958,6 +2438,7 @@ export const IntransitiveStudio: React.FC = () => {
                         isZoomEnabled={tournamentZoomEnabled}
                         onToggleZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
                         arenaLiveResults={arenaLiveResults}
+                        onExportTournamentPGN={handleExportTournamentPGN}
                       />
                     )}
                   </>
@@ -1985,7 +2466,7 @@ export const IntransitiveStudio: React.FC = () => {
         </div>
 
         {/* Full-Width Horizontal Bottom Strip for Move Notation & Accuracy Evaluation */}
-        {(moveHistory.length > 0 || (finalGameStatus.isOver && gameAccuracyAnalysis)) && (
+        {(activeMoveHistory.length > 0 || (finalGameStatus.isOver && gameAccuracyAnalysis)) && (
           <div className="intransitive-bottom-strip">
             <div className="intransitive-bottom-strip-header">
               <div className="intransitive-bottom-strip-tabs">
@@ -2005,25 +2486,25 @@ export const IntransitiveStudio: React.FC = () => {
                   className={`intransitive-bottom-tab ${!showAccuracyView || !finalGameStatus.isOver ? 'active' : ''}`}
                 >
                   <ScrollText size={14} />
-                  <span>Move Notation ({moveHistory.length} {moveHistory.length === 1 ? 'ply' : 'plies'})</span>
+                  <span>Move Notation ({activeMoveHistory.length} {activeMoveHistory.length === 1 ? 'ply' : 'plies'})</span>
                 </button>
               </div>
 
               <div className="intransitive-bottom-strip-meta">
-                {historyIndex >= 0 && historyIndex < moveHistory.length - 1 && (
+                {activeHistoryIndex >= 0 && activeHistoryIndex < activeMoveHistory.length - 1 && (
                   <button
                     type="button"
-                    onClick={() => handleSelectHistoryIndex(moveHistory.length - 1)}
+                    onClick={() => handleSelectHistoryIndex(activeMoveHistory.length - 1)}
                     className="intransitive-mini-btn"
                     style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}
                   >
-                    Jump to End (Ply {moveHistory.length})
+                    Jump to End (Ply {activeMoveHistory.length})
                   </button>
                 )}
                 {finalGameStatus.isOver ? (
                   <span className="intransitive-meta-badge end">Game Concluded</span>
                 ) : (
-                  <span className="intransitive-meta-badge live">Move {Math.floor(moveHistory.length / 2) + 1}</span>
+                  <span className="intransitive-meta-badge live">Move {Math.floor(activeMoveHistory.length / 2) + 1}</span>
                 )}
               </div>
             </div>
@@ -2047,13 +2528,13 @@ export const IntransitiveStudio: React.FC = () => {
                       : `Computer (${checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'AI'})`
                   }
                   modelName={activeEvalModel.name}
-                  currentPlyIndex={historyIndex}
+                  currentPlyIndex={activeHistoryIndex}
                   onSelectPly={handleSelectHistoryIndex}
                 />
               ) : (
                 <MoveListSection
-                  moves={moveHistory}
-                  currentIndex={historyIndex}
+                  moves={activeMoveHistory}
+                  currentIndex={activeHistoryIndex}
                   onSelectIndex={handleSelectHistoryIndex}
                 />
               )}
@@ -2061,6 +2542,159 @@ export const IntransitiveStudio: React.FC = () => {
           </div>
         )}
         </>
+      )}
+
+      {/* Position (FEN) & Notation (PGN) Export / Import Modal */}
+      {showExportModal && (
+        <div className="intransitive-fen-modal-overlay" onClick={() => setShowExportModal(false)}>
+          <div className="intransitive-fen-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="intransitive-fen-modal-header">
+              <div className="intransitive-fen-modal-title">
+                <ScrollText size={16} color="#ea580c" />
+                <span>Game State & Notation</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExportModal(false)}
+                className="intransitive-icon-btn"
+                title="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Modal Tabs: Position (FEN) vs Notation (PGN) */}
+            <div className="intransitive-arena-mode-segmented" style={{ marginBottom: '0.6rem' }}>
+              <button
+                type="button"
+                className={`intransitive-mode-segmented-btn ${exportModalTab === 'fen' ? 'active' : ''}`}
+                onClick={() => setExportModalTab('fen')}
+              >
+                <Target size={13} />
+                <span>Position (FEN)</span>
+              </button>
+              <button
+                type="button"
+                className={`intransitive-mode-segmented-btn ${exportModalTab === 'pgn' ? 'active' : ''}`}
+                onClick={() => setExportModalTab('pgn')}
+              >
+                <FileText size={13} />
+                <span>Notation (PGN)</span>
+              </button>
+            </div>
+
+            {exportModalTab === 'fen' ? (
+              <>
+                <p style={{ fontSize: '0.74rem', color: '#6b635b', margin: 0 }}>
+                  Export or import any Intransitive 9x9 position string.
+                  Blue pieces: <code>R, P, S</code>. Red pieces: <code>r, p, s</code>.
+                </p>
+
+                <textarea
+                  className="intransitive-fen-textarea"
+                  value={customFenInput}
+                  onChange={(e) => {
+                    setCustomFenInput(e.target.value);
+                    setFenError(null);
+                  }}
+                  placeholder="Paste FEN here..."
+                  rows={3}
+                />
+
+                {fenError && (
+                  <div className="intransitive-fen-error">
+                    {fenError}
+                  </div>
+                )}
+
+                <div className="intransitive-fen-presets">
+                  <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#786f66' }}>Quick Presets:</span>
+                  <button
+                    type="button"
+                    className="intransitive-fen-preset-btn"
+                    onClick={() => setCustomFenInput('9/4pr3/4spr2/5spr1/1PS3sp1/1RPS5/2RPS4/3RP4/9 b 0 1')}
+                  >
+                    Starting Position
+                  </button>
+                  <button
+                    type="button"
+                    className="intransitive-fen-preset-btn"
+                    onClick={() => setCustomFenInput('3p5/5r3/4s4/2s2rprp/1PS1SP3/1RPR3R1/9/4P4/9 r 0 1')}
+                    title="Position before Red's blunder Pg6-g5 (Red to move)"
+                  >
+                    Blunder Position (Red to Move)
+                  </button>
+                  <button
+                    type="button"
+                    className="intransitive-fen-preset-btn"
+                    onClick={() => setCustomFenInput('3p5/5r3/4s4/2s2r1rp/1PS1SPp2/1RPR3R1/9/4P4/9 b 0 1')}
+                    title="Position after Red's blunder Pg6-g5 (Blue forced win corridor)"
+                  >
+                    Blunder Position (Blue to Move)
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.4rem' }}>
+                  <button
+                    type="button"
+                    className="intransitive-btn-secondary"
+                    onClick={() => {
+                      navigator.clipboard.writeText(customFenInput.trim());
+                      setFenCopied(true);
+                      setTimeout(() => setFenCopied(false), 2000);
+                    }}
+                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                  >
+                    {fenCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {fenCopied ? 'Copied FEN!' : 'Copy FEN'}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="intransitive-btn-primary"
+                    onClick={() => handleLoadFEN(customFenInput)}
+                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.9rem' }}
+                  >
+                    <Check size={14} /> Load Position
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: '0.74rem', color: '#6b635b', margin: 0 }}>
+                  Standard Intransitive PGN record including move notations, player labels, event metadata, and result.
+                </p>
+
+                <textarea
+                  className="intransitive-fen-textarea"
+                  value={getActiveGamePGN()}
+                  readOnly
+                  rows={8}
+                  style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.72rem', whiteSpace: 'pre' }}
+                />
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.4rem' }}>
+                  <button
+                    type="button"
+                    className="intransitive-btn-secondary"
+                    onClick={handleCopyPGN}
+                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                  >
+                    {pgnCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {pgnCopied ? 'Copied PGN!' : 'Copy PGN'}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="intransitive-btn-primary"
+                    onClick={handleExportPGN}
+                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.9rem' }}
+                  >
+                    <Download size={14} /> Download .pgn
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Play,
   Pause,
@@ -11,6 +11,11 @@ import {
   Swords,
   Trophy,
   Target,
+  ChevronDown,
+  Sliders,
+  Copy,
+  Check,
+  Download,
 } from 'lucide-react';
 
 const DEPTH_SHORT: Record<number, string> = {
@@ -50,6 +55,11 @@ export interface LiveControlsProps {
   onJumpToEnd?: () => void;
   onChangeFighterADepth?: (depth: number) => void;
   onChangeFighterBDepth?: (depth: number) => void;
+  onCopyFEN?: () => void;
+  onCopyPGN?: () => void;
+  onExportPGN?: () => void;
+  fenCopied?: boolean;
+  pgnCopied?: boolean;
 }
 
 export const LiveControls: React.FC<LiveControlsProps> = ({
@@ -79,7 +89,13 @@ export const LiveControls: React.FC<LiveControlsProps> = ({
   onJumpToEnd,
   onChangeFighterADepth,
   onChangeFighterBDepth,
+  onCopyFEN,
+  onCopyPGN,
+  onExportPGN,
+  fenCopied,
+  pgnCopied,
 }) => {
+  const [showSearchSettings, setShowSearchSettings] = useState<boolean>(false);
   const labelA = fighterAMode === 'time' ? `${fighterATimeSec}s` : `D${fighterADepth}`;
   const labelB = fighterBMode === 'time' ? `${fighterBTimeSec}s` : `D${fighterBDepth}`;
 
@@ -138,88 +154,104 @@ export const LiveControls: React.FC<LiveControlsProps> = ({
         </div>
       </div>
 
-      {/* Depth Sliders for Each Fighter */}
+      {/* Collapsible Search Settings Accordion */}
       {(onChangeFighterADepth || onChangeFighterBDepth) && (
-        <div style={{
-          display: 'flex',
-          gap: '0.75rem',
-          padding: '0.45rem 0.6rem',
-          background: '#faf8f5',
-          borderRadius: '8px',
-          border: '1px solid #eee8de',
-        }}>
-          {/* Fighter A Depth */}
-          {fighterAMode === 'depth' && onChangeFighterADepth && (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: 700, color: '#1d4ed8' }}>
-                  <Target size={10} color="#2563eb" />
-                  {fighterAName.split(' ')[0]}
-                </span>
-                <span style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontWeight: 700,
-                  color: '#1d4ed8',
-                  background: '#eff6ff',
-                  padding: '0.05rem 0.35rem',
-                  borderRadius: '3px',
-                  border: '1px solid #bfdbfe',
-                  fontSize: '0.64rem',
-                }}>
-                  {DEPTH_SHORT[fighterADepth] || `D${fighterADepth}`}
-                </span>
-              </div>
-              <input
-                type="range"
-                min="1"
-                max="6"
-                step="1"
-                value={fighterADepth}
-                onChange={(e) => onChangeFighterADepth(parseInt(e.target.value, 10))}
-                className="intransitive-range-slider blue"
-                disabled={isPlaying}
-                style={{ height: '4px' }}
-              />
-            </div>
-          )}
+        <div className={`intransitive-accordion ${showSearchSettings ? 'open' : ''}`}>
+          <button
+            type="button"
+            onClick={() => setShowSearchSettings(!showSearchSettings)}
+            className="intransitive-accordion-header"
+          >
+            <span className="intransitive-accordion-title">
+              <Sliders size={12} color="#c2410c" />
+              <span>Search Options ({labelA} vs {labelB})</span>
+            </span>
+            <span className={`intransitive-accordion-chevron ${showSearchSettings ? 'open' : ''}`}>
+              <ChevronDown size={13} />
+            </span>
+          </button>
 
-          {/* Separator */}
-          {fighterAMode === 'depth' && fighterBMode === 'depth' && onChangeFighterADepth && onChangeFighterBDepth && (
-            <div style={{ width: '1px', background: '#eee8de', alignSelf: 'stretch' }} />
-          )}
+          {showSearchSettings && (
+            <div className="intransitive-accordion-body" style={{ background: '#faf8f5', padding: '0.45rem 0.6rem' }}>
+              <div style={{
+                display: 'flex',
+                gap: '0.75rem',
+              }}>
+                {/* Fighter A Depth */}
+                {fighterAMode === 'depth' && onChangeFighterADepth && (
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: 700, color: '#1d4ed8' }}>
+                        <Target size={10} color="#2563eb" />
+                        {fighterAName.split(' ')[0]}
+                      </span>
+                      <span style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontWeight: 700,
+                        color: '#1d4ed8',
+                        background: '#eff6ff',
+                        padding: '0.05rem 0.35rem',
+                        borderRadius: '3px',
+                        border: '1px solid #bfdbfe',
+                        fontSize: '0.64rem',
+                      }}>
+                        {DEPTH_SHORT[fighterADepth] || `D${fighterADepth}`}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="6"
+                      step="1"
+                      value={fighterADepth}
+                      onChange={(e) => onChangeFighterADepth(parseInt(e.target.value, 10))}
+                      className="intransitive-range-slider blue"
+                      disabled={isPlaying}
+                      style={{ height: '4px' }}
+                    />
+                  </div>
+                )}
 
-          {/* Fighter B Depth */}
-          {fighterBMode === 'depth' && onChangeFighterBDepth && (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem' }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: 700, color: '#c2410c' }}>
-                  <Target size={10} color="#ea580c" />
-                  {fighterBName.split(' ')[0]}
-                </span>
-                <span style={{
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontWeight: 700,
-                  color: '#c2410c',
-                  background: '#fff7ed',
-                  padding: '0.05rem 0.35rem',
-                  borderRadius: '3px',
-                  border: '1px solid #fed7aa',
-                  fontSize: '0.64rem',
-                }}>
-                  {DEPTH_SHORT[fighterBDepth] || `D${fighterBDepth}`}
-                </span>
+                {/* Separator */}
+                {fighterAMode === 'depth' && fighterBMode === 'depth' && onChangeFighterADepth && onChangeFighterBDepth && (
+                  <div style={{ width: '1px', background: '#eee8de', alignSelf: 'stretch' }} />
+                )}
+
+                {/* Fighter B Depth */}
+                {fighterBMode === 'depth' && onChangeFighterBDepth && (
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: 700, color: '#c2410c' }}>
+                        <Target size={10} color="#ea580c" />
+                        {fighterBName.split(' ')[0]}
+                      </span>
+                      <span style={{
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontWeight: 700,
+                        color: '#c2410c',
+                        background: '#fff7ed',
+                        padding: '0.05rem 0.35rem',
+                        borderRadius: '3px',
+                        border: '1px solid #fed7aa',
+                        fontSize: '0.64rem',
+                      }}>
+                        {DEPTH_SHORT[fighterBDepth] || `D${fighterBDepth}`}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="1"
+                      max="6"
+                      step="1"
+                      value={fighterBDepth}
+                      onChange={(e) => onChangeFighterBDepth(parseInt(e.target.value, 10))}
+                      className="intransitive-range-slider red"
+                      disabled={isPlaying}
+                      style={{ height: '4px' }}
+                    />
+                  </div>
+                )}
               </div>
-              <input
-                type="range"
-                min="1"
-                max="6"
-                step="1"
-                value={fighterBDepth}
-                onChange={(e) => onChangeFighterBDepth(parseInt(e.target.value, 10))}
-                className="intransitive-range-slider red"
-                disabled={isPlaying}
-                style={{ height: '4px' }}
-              />
             </div>
           )}
         </div>
@@ -351,6 +383,45 @@ export const LiveControls: React.FC<LiveControlsProps> = ({
           </span>
         </div>
       </div>
+
+      {/* Quick Export FEN & PGN Action Strip */}
+      {(onCopyFEN || onCopyPGN || onExportPGN) && (
+        <div className="intransitive-export-strip">
+          {onCopyFEN && (
+            <button
+              type="button"
+              onClick={onCopyFEN}
+              className="intransitive-mini-btn"
+              title="Copy current board position FEN to clipboard"
+            >
+              {fenCopied ? <Check size={11} color="#059669" /> : <Copy size={11} />}
+              <span>{fenCopied ? 'FEN Copied!' : 'Copy FEN'}</span>
+            </button>
+          )}
+          {onCopyPGN && (
+            <button
+              type="button"
+              onClick={onCopyPGN}
+              className="intransitive-mini-btn"
+              title="Copy exhibition match movelist in PGN format to clipboard"
+            >
+              {pgnCopied ? <Check size={11} color="#059669" /> : <Copy size={11} />}
+              <span>{pgnCopied ? 'PGN Copied!' : 'Copy PGN'}</span>
+            </button>
+          )}
+          {onExportPGN && (
+            <button
+              type="button"
+              onClick={onExportPGN}
+              className="intransitive-mini-btn"
+              title="Download exhibition game as .pgn file"
+            >
+              <Download size={11} />
+              <span>Export .PGN</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 };

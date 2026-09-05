@@ -15,6 +15,7 @@ import {
   Sliders,
   Sparkles,
   BrainCircuit,
+  ChevronDown,
 } from 'lucide-react';
 import type { TrainingStats } from '../engine/types';
 
@@ -27,6 +28,12 @@ interface TurboTrainerCardProps {
   onResetTraining: () => void;
   trainingSearchDepth?: number;
   onChangeTrainingSearchDepth?: (depth: number) => void;
+  trainerArchitecture?: 'linear' | 'nnue';
+  onChangeTrainerArchitecture?: (arch: 'linear' | 'nnue') => void;
+  isNNUETraining?: boolean;
+  nnueProgress?: { completed: number; total: number; loss: number; nps: number; bufferSize: number } | null;
+  onStartNNUE?: (games: number) => void;
+  onStopNNUE?: () => void;
 }
 
 export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
@@ -38,11 +45,22 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
   onResetTraining,
   trainingSearchDepth = 1,
   onChangeTrainingSearchDepth,
+  trainerArchitecture = 'linear',
+  onChangeTrainerArchitecture,
+  isNNUETraining = false,
+  nnueProgress,
+  onStartNNUE,
+  onStopNNUE,
 }) => {
   const [customAmount, setCustomAmount] = useState<number>(300);
+  const [showSafeguards, setShowSafeguards] = useState<boolean>(false);
+  const [showBreakdown, setShowBreakdown] = useState<boolean>(false);
 
-  const percent = progress && progress.total > 0
-    ? Math.min(100, Math.round((progress.completed / progress.total) * 100))
+  const activeIsTraining = trainerArchitecture === 'nnue' ? isNNUETraining : isTraining;
+  const activeProgress = trainerArchitecture === 'nnue' ? nnueProgress : progress;
+
+  const percent = activeProgress && activeProgress.total > 0
+    ? Math.min(100, Math.round((activeProgress.completed / activeProgress.total) * 100))
     : 0;
 
   const totalDecisive = stats.blueWins + stats.redWins;
@@ -51,7 +69,11 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
 
   const handleStartCustom = () => {
     const games = Math.max(1, Math.min(50000, Number(customAmount) || 100));
-    onStartTurbo(games);
+    if (trainerArchitecture === 'nnue') {
+      onStartNNUE?.(games);
+    } else {
+      onStartTurbo(games);
+    }
   };
 
   return (
@@ -60,33 +82,61 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
       <div className="intransitive-card-title-row">
         <div className="intransitive-card-heading">
           <div className="intransitive-card-icon-wrap" style={{ background: '#fff7ed', color: '#ea580c', borderColor: '#fed7aa' }}>
-            <Cpu size={18} />
+            {trainerArchitecture === 'nnue' ? <BrainCircuit size={18} /> : <Cpu size={18} />}
           </div>
           <div className="intransitive-card-text">
-            <h3>Turbo Background Trainer</h3>
-            <p>High-speed Tabula Rasa self-play in headless background Web Worker</p>
+            <h3>{trainerArchitecture === 'nnue' ? 'NNUE Neural Trainer' : 'Turbo Background Trainer'}</h3>
+            <p>
+              {trainerArchitecture === 'nnue'
+                ? '486 -> 128x2 -> 32 -> 1 Neural Net with AdamW mini-batch replay buffer'
+                : 'High-speed Tabula Rasa self-play in headless background Web Worker'}
+            </p>
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onResetTraining}
-          disabled={isTraining}
-          className="intransitive-btn-text"
-        >
-          Reset to Gen 0
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {/* Architecture Switcher */}
+          <div className="intransitive-segmented-switch">
+            <button
+              type="button"
+              disabled={activeIsTraining}
+              onClick={() => onChangeTrainerArchitecture?.('linear')}
+              className={`intransitive-segmented-btn ${trainerArchitecture === 'linear' ? 'active' : ''}`}
+              title="Legacy Linear Tabula Rasa TD-Leaf Trainer"
+            >
+              <Cpu size={12} /> Linear
+            </button>
+            <button
+              type="button"
+              disabled={activeIsTraining}
+              onClick={() => onChangeTrainerArchitecture?.('nnue')}
+              className={`intransitive-segmented-btn ${trainerArchitecture === 'nnue' ? 'active' : ''}`}
+              title="Modern Efficiently Updatable Neural Network"
+            >
+              <BrainCircuit size={12} /> NNUE
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={onResetTraining}
+            disabled={activeIsTraining}
+            className="intransitive-btn-text"
+          >
+            Reset to Gen 0
+          </button>
+        </div>
       </div>
 
       {/* Progress Telemetry Bar (When Training) */}
-      {isTraining && progress && (
+      {activeIsTraining && activeProgress && (
         <div className="intransitive-progress-box">
           <div className="intransitive-progress-header">
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', color: '#ea580c', fontWeight: 700 }}>
-              <Activity size={15} /> Turbo Self-Play in Progress...
+              <Activity size={15} /> {trainerArchitecture === 'nnue' ? 'NNUE Self-Play & Backprop...' : 'Turbo Self-Play in Progress...'}
             </span>
             <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>
-              {progress.completed.toLocaleString()} / {progress.total.toLocaleString()} Games ({percent}%)
+              {activeProgress.completed.toLocaleString()} / {activeProgress.total.toLocaleString()} Games ({percent}%)
             </span>
           </div>
 
@@ -100,11 +150,16 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.74rem', color: '#786f66', paddingTop: '0.3rem' }}>
             <span>
-              Worker Throughput: <strong style={{ color: '#241e19', fontFamily: "'JetBrains Mono', monospace" }}>{progress.nps.toLocaleString()}</strong> plies/sec
+              Worker Speed: <strong style={{ color: '#241e19', fontFamily: "'JetBrains Mono', monospace" }}>{activeProgress.nps.toLocaleString()}</strong> plies/sec
+              {trainerArchitecture === 'nnue' && nnueProgress && (
+                <span style={{ marginLeft: '0.6rem', color: '#c2410c' }}>
+                  | Loss: <strong>{nnueProgress.loss.toFixed(4)}</strong> | Buffer: <strong>{nnueProgress.bufferSize.toLocaleString()}</strong>
+                </span>
+              )}
             </span>
             <button
               type="button"
-              onClick={onStopTurbo}
+              onClick={trainerArchitecture === 'nnue' ? onStopNNUE : onStopTurbo}
               className="intransitive-btn-stop"
             >
               <Square size={11} fill="currentColor" /> Stop Early
@@ -188,7 +243,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
       )}
 
       {/* Arbitrary Training Amount Input Bar (Placed under metrics grid) */}
-      {!isTraining && (
+      {!activeIsTraining && (
         <div className="intransitive-custom-train-bar" style={{ marginTop: '0.65rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
             <Sliders size={15} color="#6b635b" />
@@ -212,7 +267,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
 
             {/* Quick Preset Additive Chips */}
             <div className="intransitive-mini-btn-group">
-              {[100, 300, 500, 2500].map((val) => (
+              {(trainerArchitecture === 'nnue' ? [50, 100, 300, 1000] : [100, 300, 500, 2500]).map((val) => (
                 <button
                   key={val}
                   type="button"
@@ -232,148 +287,159 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
             className="intransitive-btn-primary"
             style={{ padding: '0.45rem 1.1rem', fontSize: '0.78rem' }}
           >
-            <Rocket size={14} /> Train {customAmount.toLocaleString()} Games
+            <Rocket size={14} /> Train {trainerArchitecture === 'nnue' ? 'NNUE' : 'Linear'} ({customAmount.toLocaleString()} Games)
           </button>
         </div>
       )}
 
-      {/* AlphaZero Exploration & Anti-Cycle Safeguards Strip */}
-      <div
-        style={{
-          marginTop: '0.65rem',
-          padding: '0.55rem 0.75rem',
-          background: '#fcfaf7',
-          border: '1px solid #ebd9c8',
-          borderRadius: '8px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '0.35rem',
-          fontSize: '0.74rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 700, color: '#43281c' }}>
-            <Sparkles size={14} color="#d97706" />
-            <span>AlphaZero Exploration Engine & Anti-Cycle Safeguards</span>
-          </div>
-          <span
-            style={{
-              fontSize: '0.68rem',
-              color: '#059669',
-              background: '#ecfdf5',
-              padding: '0.1rem 0.45rem',
-              borderRadius: '4px',
-              border: '1px solid #a7f3d0',
-              fontWeight: 600,
-            }}
-          >
-            Active
-          </span>
-        </div>
-
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-            gap: '0.35rem',
-            color: '#6b635b',
-            fontSize: '0.71rem',
-            marginTop: '0.1rem',
-          }}
+      {/* AlphaZero Exploration & Anti-Cycle Safeguards Drawer */}
+      <div className={`intransitive-accordion ${showSafeguards ? 'open' : ''}`} style={{ marginTop: '0.65rem' }}>
+        <button
+          type="button"
+          onClick={() => setShowSafeguards(!showSafeguards)}
+          className="intransitive-accordion-header"
         >
-          <div>
-            <strong style={{ color: '#292524' }}>Dirichlet Noise:</strong> α=0.30, ε=0.25 (Plies 0–4)
-          </div>
-          <div>
-            <strong style={{ color: '#292524' }}>Softmax Temp:</strong> τ=24 cp → 10 cp → 0 (Greedy)
-          </div>
-          <div>
-            <strong style={{ color: '#292524' }}>Adaptive LR:</strong> α={stats.currentAlpha !== undefined ? stats.currentAlpha.toFixed(4) : '0.0150'} (Annealed)
-          </div>
-          <div>
-            <strong style={{ color: '#292524' }}>Opponent Mix:</strong> 65% Self / 20% League / 15% Anchor
-          </div>
-          <div>
-            <strong style={{ color: '#292524' }}>TD Signal:</strong> Backward eligibility TD(λ=0.7)
-          </div>
-        </div>
-      </div>
-
-      {/* Rich Statistical Deep-Dive Section */}
-      <div className="intransitive-stats-deep-section">
-        <div className="intransitive-stats-deep-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <BarChart3 size={15} color="#c2410c" />
-            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#322a24' }}>
-              Game Outcome & Terminal Breakdown
+          <span className="intransitive-accordion-title">
+            <Sparkles size={13} color="#d97706" />
+            <span>AlphaZero RL Safeguards & Hyperparameters</span>
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+            <span
+              style={{
+                fontSize: '0.67rem',
+                color: '#059669',
+                background: '#ecfdf5',
+                padding: '0.1rem 0.45rem',
+                borderRadius: '4px',
+                border: '1px solid #a7f3d0',
+                fontWeight: 600,
+              }}
+            >
+              Active
+            </span>
+            <span className={`intransitive-accordion-chevron ${showSafeguards ? 'open' : ''}`}>
+              <ChevronDown size={13} />
             </span>
           </div>
-          <span style={{ fontSize: '0.72rem', color: '#786f66' }}>
-            Distribution across all {stats.gamesPlayed.toLocaleString()} games
+        </button>
+
+        {showSafeguards && (
+          <div className="intransitive-accordion-body" style={{ background: '#fcfaf7' }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+                gap: '0.35rem',
+                color: '#6b635b',
+                fontSize: '0.71rem',
+              }}
+            >
+              <div>
+                <strong style={{ color: '#292524' }}>Dirichlet Noise:</strong> α=0.30, ε=0.25 (Plies 0–4)
+              </div>
+              <div>
+                <strong style={{ color: '#292524' }}>Softmax Temp:</strong> τ=24 cp → 10 cp → 0 (Greedy)
+              </div>
+              <div>
+                <strong style={{ color: '#292524' }}>Adaptive LR:</strong> α={stats.currentAlpha !== undefined ? stats.currentAlpha.toFixed(4) : '0.0150'} (Annealed)
+              </div>
+              <div>
+                <strong style={{ color: '#292524' }}>Opponent Mix:</strong> 65% Self / 20% League / 15% Anchor
+              </div>
+              <div>
+                <strong style={{ color: '#292524' }}>TD Signal:</strong> Backward eligibility TD(λ=0.7)
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Rich Statistical Deep-Dive Section Drawer */}
+      <div className={`intransitive-accordion ${showBreakdown ? 'open' : ''}`} style={{ marginTop: '0.65rem' }}>
+        <button
+          type="button"
+          onClick={() => setShowBreakdown(!showBreakdown)}
+          className="intransitive-accordion-header"
+        >
+          <span className="intransitive-accordion-title">
+            <BarChart3 size={13} color="#c2410c" />
+            <span>Game Outcome & Terminal Breakdown</span>
           </span>
-        </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+            <span style={{ fontSize: '0.68rem', color: '#786f66' }}>
+              {stats.gamesPlayed.toLocaleString()} games
+            </span>
+            <span className={`intransitive-accordion-chevron ${showBreakdown ? 'open' : ''}`}>
+              <ChevronDown size={13} />
+            </span>
+          </div>
+        </button>
 
-        <div className="intransitive-stats-deep-grid">
-          {/* Touchdown Outcomes */}
-          <div className="intransitive-stats-subcard">
-            <div className="intransitive-stats-subcard-title">
-              <Crosshair size={13} color="#2563eb" /> Touchdowns (Goal reached)
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Blue Touchdowns (i9):</span>
-              <strong style={{ color: '#2563eb' }}>{stats.touchdownWins?.blue ?? 0}</strong>
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Red Touchdowns (a1):</span>
-              <strong style={{ color: '#ea580c' }}>{stats.touchdownWins?.red ?? 0}</strong>
+        {showBreakdown && (
+          <div className="intransitive-accordion-body" style={{ background: '#ffffff', padding: '0.75rem' }}>
+            <div className="intransitive-stats-deep-grid">
+              {/* Touchdown Outcomes */}
+              <div className="intransitive-stats-subcard">
+                <div className="intransitive-stats-subcard-title">
+                  <Crosshair size={13} color="#2563eb" /> Touchdowns (Goal reached)
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Blue Touchdowns (i9):</span>
+                  <strong style={{ color: '#2563eb' }}>{stats.touchdownWins?.blue ?? 0}</strong>
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Red Touchdowns (a1):</span>
+                  <strong style={{ color: '#ea580c' }}>{stats.touchdownWins?.red ?? 0}</strong>
+                </div>
+              </div>
+
+              {/* Elimination Outcomes */}
+              <div className="intransitive-stats-subcard">
+                <div className="intransitive-stats-subcard-title">
+                  <ShieldAlert size={13} color="#d97706" /> Eliminations (All pieces captured)
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Blue Army Eliminated:</span>
+                  <strong style={{ color: '#ea580c' }}>{stats.eliminationWins?.red ?? 0}</strong>
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Red Army Eliminated:</span>
+                  <strong style={{ color: '#2563eb' }}>{stats.eliminationWins?.blue ?? 0}</strong>
+                </div>
+              </div>
+
+              {/* Draws & Immobilizations */}
+              <div className="intransitive-stats-subcard">
+                <div className="intransitive-stats-subcard-title">
+                  <BarChart3 size={13} color="#7c3aed" /> Draws & Immobilizations
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Repetition Draws:</span>
+                  <strong>{stats.drawRepetition ?? 0}</strong>
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>50-Move Limit / Stalemate:</span>
+                  <strong>{(stats.draw50Move ?? 0) + (stats.immobilizations ?? 0)}</strong>
+                </div>
+              </div>
+
+              {/* Ply Extremes */}
+              <div className="intransitive-stats-subcard">
+                <div className="intransitive-stats-subcard-title">
+                  <Activity size={13} color="#059669" /> Ply Extremes
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Shortest Decisive Game:</span>
+                  <strong>{stats.shortestGamePlies ? `${stats.shortestGamePlies} plies` : '—'}</strong>
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Longest Game:</span>
+                  <strong>{stats.longestGamePlies ? `${stats.longestGamePlies} plies` : '—'}</strong>
+                </div>
+              </div>
             </div>
           </div>
-
-          {/* Elimination Outcomes */}
-          <div className="intransitive-stats-subcard">
-            <div className="intransitive-stats-subcard-title">
-              <ShieldAlert size={13} color="#d97706" /> Eliminations (All pieces captured)
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Blue Army Eliminated:</span>
-              <strong style={{ color: '#ea580c' }}>{stats.eliminationWins?.red ?? 0}</strong>
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Red Army Eliminated:</span>
-              <strong style={{ color: '#2563eb' }}>{stats.eliminationWins?.blue ?? 0}</strong>
-            </div>
-          </div>
-
-          {/* Draws & Immobilizations */}
-          <div className="intransitive-stats-subcard">
-            <div className="intransitive-stats-subcard-title">
-              <BarChart3 size={13} color="#7c3aed" /> Draws & Immobilizations
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Repetition Draws:</span>
-              <strong>{stats.drawRepetition ?? 0}</strong>
-            </div>
-            <div className="intransitive-stats-row">
-              <span>50-Move Limit / Stalemate:</span>
-              <strong>{(stats.draw50Move ?? 0) + (stats.immobilizations ?? 0)}</strong>
-            </div>
-          </div>
-
-          {/* Ply Extremes */}
-          <div className="intransitive-stats-subcard">
-            <div className="intransitive-stats-subcard-title">
-              <Activity size={13} color="#059669" /> Ply Extremes
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Shortest Decisive Game:</span>
-              <strong>{stats.shortestGamePlies ? `${stats.shortestGamePlies} plies` : '—'}</strong>
-            </div>
-            <div className="intransitive-stats-row">
-              <span>Longest Game:</span>
-              <strong>{stats.longestGamePlies ? `${stats.longestGamePlies} plies` : '—'}</strong>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
