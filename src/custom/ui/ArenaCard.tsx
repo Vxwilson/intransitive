@@ -130,7 +130,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
   };
 
   return (
-    <div className="intransitive-editorial-card">
+    <div className="intransitive-editorial-card compact-arena">
       {/* Header */}
       <div className="intransitive-card-title-row">
         <div className="intransitive-card-heading">

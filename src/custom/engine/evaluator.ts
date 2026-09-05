@@ -301,5 +301,12 @@ export function evaluate(game: IntransitiveGame, weights: EvaluationWeights): nu
     }
   }
 
+  // Apply 50-move clock urgency decay: as halfmoveClock ticks without captures,
+  // stagnant positions experience mild progress pressure towards 0.
+  if (game.halfmoveClock > 0 && Math.abs(score) > 0) {
+    const clockFactor = Math.min(1.0, game.halfmoveClock / 100);
+    score *= (1.0 - 0.25 * clockFactor);
+  }
+
   return Math.round(score);
 }

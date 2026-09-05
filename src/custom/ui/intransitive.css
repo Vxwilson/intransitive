@@ -2210,3 +2210,875 @@ body.theme-intransitive-warm {
   border-color: #fca5a5 !important;
 }
 
+/* ==========================================================================
+   Post-Game Accuracy & Lichess-Style Interactive Evaluation Graph
+   ========================================================================== */
+.intransitive-accuracy-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  background: #ffffff;
+  border: 1px solid #e6dfd5;
+  border-radius: 16px;
+  padding: 1.1rem;
+  box-shadow: 0 4px 18px rgba(45, 38, 30, 0.05);
+  animation: fadeIn 0.25s ease-out;
+}
+
+.intransitive-accuracy-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.intransitive-accuracy-icon-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: #fff7ed;
+  color: #ea580c;
+  border: 1px solid #ffedd5;
+}
+
+.intransitive-accuracy-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #2b2520;
+}
+
+.intransitive-accuracy-subtitle {
+  font-size: 0.72rem;
+  color: #786f66;
+  font-weight: 500;
+}
+
+.intransitive-accuracy-winner-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #c2410c;
+}
+
+/* Dual Players Grid */
+.intransitive-accuracy-players-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+@media (max-width: 640px) {
+  .intransitive-accuracy-players-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.intransitive-accuracy-player-box {
+  background: #faf8f5;
+  border: 1px solid #ebe5dc;
+  border-radius: 12px;
+  padding: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.intransitive-accuracy-player-box.blue {
+  border-left: 3px solid #2563eb;
+}
+
+.intransitive-accuracy-player-box.red {
+  border-left: 3px solid #ea580c;
+}
+
+.intransitive-accuracy-player-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.intransitive-accuracy-name-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.intransitive-accuracy-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.intransitive-accuracy-dot.blue {
+  background: #2563eb;
+}
+
+.intransitive-accuracy-dot.red {
+  background: #ea580c;
+}
+
+.intransitive-accuracy-player-name {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #322a24;
+}
+
+.intransitive-accuracy-pct-badge {
+  font-size: 1.05rem;
+  font-weight: 800;
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.intransitive-accuracy-pct-badge small {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #786f66;
+}
+
+.intransitive-accuracy-pct-badge.blue {
+  color: #1d4ed8;
+}
+
+.intransitive-accuracy-pct-badge.red {
+  color: #c2410c;
+}
+
+.intransitive-accuracy-stats-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+}
+
+.intransitive-accuracy-stat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.73rem;
+  padding: 0.18rem 0.35rem;
+  border-radius: 6px;
+}
+
+.intransitive-accuracy-stat-item .stat-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #635950;
+  font-weight: 500;
+}
+
+.intransitive-accuracy-stat-item .stat-val {
+  font-weight: 700;
+  color: #2b2520;
+}
+
+.intransitive-accuracy-stat-item .stat-val.inaccuracy {
+  color: #d97706;
+}
+
+.intransitive-accuracy-stat-item .stat-val.mistake {
+  color: #ea580c;
+}
+
+.intransitive-accuracy-stat-item .stat-val.blunder {
+  color: #dc2626;
+}
+
+.intransitive-accuracy-stat-item.cpl {
+  margin-top: 0.2rem;
+  border-top: 1px solid #ebe5dc;
+  padding-top: 0.35rem;
+}
+
+/* Evaluation Graph Section - Luxury Warm Ceramic Theme */
+.intransitive-accuracy-graph-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  background: #faf8f5;
+  border: 1px solid #e7dfd5;
+  border-radius: 12px;
+  padding: 0.75rem 0.85rem;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.02);
+}
+
+.intransitive-accuracy-graph-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 24px;
+}
+
+.intransitive-accuracy-hover-readout {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: #322a24;
+  background: #ffffff;
+  padding: 0.18rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid #e4dcce;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.intransitive-accuracy-hover-readout .eval-tag {
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.72rem;
+}
+
+.intransitive-accuracy-hover-readout .eval-tag.eval-tag-blue {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.intransitive-accuracy-hover-readout .eval-tag.eval-tag-red {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+}
+
+.intransitive-accuracy-hover-readout .eval-tag.eval-tag-even {
+  background: #f5f5f4;
+  color: #57534e;
+  border: 1px solid #e7e5e4;
+}
+
+.intransitive-accuracy-hover-readout .tag-blunder {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.intransitive-accuracy-hover-readout .tag-mistake {
+  background: #fff7ed;
+  color: #c2410c;
+  border: 1px solid #fed7aa;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.intransitive-accuracy-hover-readout .tag-inaccuracy {
+  background: #fefce8;
+  color: #b45309;
+  border: 1px solid #fef08a;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.intransitive-accuracy-svg-wrap {
+  width: 100%;
+  position: relative;
+}
+
+.intransitive-accuracy-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  cursor: crosshair;
+}
+
+/* Key Turning Points */
+.intransitive-accuracy-turning-points {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.2rem;
+}
+
+.turning-points-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #574f46;
+}
+
+.turning-points-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.turning-point-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid #e6dfd5;
+  background: #faf8f5;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  color: #322a24;
+}
+
+.turning-point-chip:hover {
+  background: #f4efe6;
+  border-color: #d8cec0;
+  transform: translateY(-1px);
+}
+
+.turning-point-chip.active {
+  background: #2b2520;
+  color: #ffffff;
+  border-color: #1a1715;
+}
+
+.turning-point-chip .chip-ply {
+  font-weight: 700;
+  opacity: 0.75;
+}
+
+.turning-point-chip .chip-san {
+  font-weight: 600;
+}
+
+.turning-point-chip .chip-tag {
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.turning-point-chip.blunder .chip-tag {
+  color: #dc2626;
+}
+
+.turning-point-chip.mistake .chip-tag {
+  color: #ea580c;
+}
+
+.turning-point-chip .chip-cpl {
+  font-size: 0.65rem;
+  opacity: 0.65;
+  font-family: monospace;
+}
+
+/* ==========================================================================
+   Upgraded Single Game Exhibition Controller
+   ========================================================================== */
+
+.intransitive-exhibition-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  background: #ffffff;
+  border: 1px solid #e7ded4;
+  border-radius: 14px;
+  padding: 0.85rem 1rem;
+  box-shadow: 0 4px 14px rgba(45, 36, 28, 0.04);
+}
+
+.intransitive-exhibition-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #f2ece3;
+}
+
+.intransitive-exhibition-title-group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.intransitive-exhibition-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.intransitive-exhibition-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #2b2520;
+  line-height: 1.2;
+}
+
+.intransitive-exhibition-subtitle {
+  font-size: 0.68rem;
+  color: #8c8275;
+}
+
+.intransitive-exhibition-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  font-size: 0.69rem;
+  font-weight: 600;
+  border: 1px solid #e8dfd4;
+  background: #faf7f2;
+  color: #574f46;
+}
+
+.intransitive-exhibition-status-pill.live {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.intransitive-exhibition-status-pill.ended {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+  font-weight: 700;
+}
+
+.intransitive-pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  animation: pulse-ring 1.4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+}
+
+/* Duel Matchup Bar */
+.intransitive-exhibition-duel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: #faf7f2;
+  border: 1px solid #ede5d8;
+  border-radius: 8px;
+  padding: 0.35rem 0.65rem;
+}
+
+.fighter-duel-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  max-width: 44%;
+}
+
+.fighter-duel-badge.blue {
+  color: #1d4ed8;
+}
+
+.fighter-duel-badge.red {
+  color: #c2410c;
+}
+
+.duel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.duel-dot.blue {
+  background: #2563eb;
+  box-shadow: 0 0 4px rgba(37, 99, 235, 0.4);
+}
+
+.duel-dot.red {
+  background: #ea580c;
+  box-shadow: 0 0 4px rgba(234, 88, 12, 0.4);
+}
+
+.duel-name {
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duel-spec {
+  font-size: 0.66rem;
+  padding: 0.08rem 0.3rem;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #e0d6c8;
+  color: #574f46;
+  font-weight: 600;
+}
+
+.duel-vs {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: #a89f91;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Action CTA + Nav Cluster */
+.intransitive-exhibition-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.intransitive-btn-watch-main {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  flex: 1;
+  padding: 0.55rem 1rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #ffffff;
+  cursor: pointer;
+  border: none;
+  background: linear-gradient(135deg, #c2410c 0%, #ea580c 100%);
+  box-shadow: 0 3px 10px rgba(194, 65, 12, 0.28);
+  transition: all 0.15s ease;
+}
+
+.intransitive-btn-watch-main:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.intransitive-btn-watch-main.playing {
+  background: linear-gradient(135deg, #475569 0%, #334155 100%);
+  box-shadow: 0 3px 10px rgba(71, 85, 105, 0.25);
+}
+
+.intransitive-btn-watch-main.rematch {
+  background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  box-shadow: 0 3px 10px rgba(5, 150, 105, 0.25);
+}
+
+.intransitive-nav-cluster {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Speed Row */
+.intransitive-exhibition-speed-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid #f2ece3;
+}
+
+.intransitive-exhibition-accuracy-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #c2410c;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.intransitive-exhibition-accuracy-link:hover {
+  background: #ffedd5;
+  border-color: #fdba74;
+}
+
+/* Arena Subtabs Row in Right Column */
+.intransitive-arena-subtabs-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #faf7f2;
+  border: 1px solid #e7ded4;
+  border-radius: 10px;
+  padding: 0.3rem;
+  margin-bottom: 0.65rem;
+}
+
+.intransitive-arena-subtab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  flex: 1;
+  padding: 0.38rem 0.65rem;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #786f66;
+  font-size: 0.73rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.intransitive-arena-subtab:hover {
+  color: #2b2520;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.intransitive-arena-subtab.active {
+  background: #ffffff;
+  color: #2b2520;
+  font-weight: 700;
+  border-color: #ded4c5;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.intransitive-arena-subtab .subtab-count {
+  font-size: 0.66rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 9999px;
+  background: #ede6da;
+  color: #574f46;
+  font-family: monospace;
+}
+
+.intransitive-arena-subtab.active .subtab-count {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+/* ==========================================================================
+   Arena Mode Segmented Switcher (Single Game vs Tournament)
+   ========================================================================== */
+
+.intransitive-arena-mode-segmented {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #faf7f2;
+  border: 1px solid #e7ded4;
+  border-radius: 12px;
+  padding: 0.28rem;
+  margin-bottom: 0.85rem;
+}
+
+.intransitive-mode-segmented-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  flex: 1;
+  padding: 0.45rem 0.85rem;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #786f66;
+  font-size: 0.77rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.intransitive-mode-segmented-btn:hover {
+  color: #2b2520;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.intransitive-mode-segmented-btn.active {
+  background: #ffffff;
+  color: #c2410c;
+  font-weight: 700;
+  border-color: #ded4c5;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.intransitive-mode-segmented-btn .mode-segmented-count {
+  font-size: 0.65rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 9999px;
+  background: #ede6da;
+  color: #574f46;
+  font-family: monospace;
+}
+
+.intransitive-mode-segmented-btn.active .mode-segmented-count {
+  background: #faebe1;
+  color: #c2410c;
+}
+
+/* Compact Exhibition Card Modifiers */
+.intransitive-exhibition-card.compact {
+  padding: 0.75rem 0.85rem;
+  gap: 0.5rem;
+}
+
+.intransitive-exhibition-card.compact .intransitive-exhibition-header {
+  padding-bottom: 0.35rem;
+}
+
+.intransitive-exhibition-card.compact .intransitive-exhibition-duel-bar {
+  padding: 0.25rem 0.5rem;
+}
+
+.intransitive-exhibition-card.compact .intransitive-btn-watch-main {
+  padding: 0.45rem 0.85rem;
+  font-size: 0.78rem;
+}
+
+.intransitive-exhibition-card.compact .intransitive-btn-round {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+}
+
+.intransitive-exhibition-card.compact .intransitive-exhibition-speed-row {
+  padding-top: 0.35rem;
+}
+
+/* Compact Arena Card Override */
+.intransitive-editorial-card.compact-arena {
+  padding: 0.85rem 1rem;
+  gap: 0.7rem;
+}
+
+.intransitive-editorial-card.compact-arena .intransitive-card-title-row {
+  padding-bottom: 0.5rem;
+}
+
+/* ==========================================================================
+   Full-Width Bottom Analysis Strip (Accuracy & Move Notation)
+   ========================================================================== */
+
+.intransitive-bottom-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  width: 100%;
+  margin-top: 1.25rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid #ebe4d8;
+}
+
+.intransitive-bottom-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.intransitive-bottom-strip-tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #faf7f2;
+  padding: 0.25rem 0.35rem;
+  border-radius: 10px;
+  border: 1px solid #e7ded4;
+}
+
+.intransitive-bottom-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #786f66;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.intransitive-bottom-tab:hover {
+  color: #2b2520;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.intransitive-bottom-tab.active {
+  background: #ffffff;
+  color: #2b2520;
+  font-weight: 700;
+  border-color: #ded4c5;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.intransitive-bottom-strip-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.intransitive-meta-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 9999px;
+  border: 1px solid #e6ded4;
+  background: #faf7f2;
+  color: #6b635b;
+}
+
+.intransitive-meta-badge.live {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.intransitive-meta-badge.end {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #c2410c;
+}
+
+.intransitive-bottom-strip-body {
+  width: 100%;
+}

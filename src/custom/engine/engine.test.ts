@@ -11,7 +11,15 @@ import {
 } from './evaluator';
 import { TDLearner, type TrajectoryStep } from './tdLearner';
 import { SelfPlayTrainer } from './trainer';
-import { getTopMoves, formatEvalScore, runIterativeDeepeningAnalysis } from './search';
+import {
+  getTopMoves,
+  formatEvalScore,
+  runIterativeDeepeningAnalysis,
+  selectMove,
+  DRAW_CONTEMPT_FACTOR,
+  REPETITION_PENALTY_2FOLD,
+} from './search';
+import { algebraicToSquare, BLUE_GOAL_SQUARE, RED_GOAL_SQUARE } from '../core/constants';
 import {
   PRESET_CHECKPOINTS,
   saveCheckpoint,
@@ -340,5 +348,56 @@ const asymmResult = SelfPlayTrainer.runArenaTournament(
 assert(asymmResult.gamesPlayed === 10, 'Must complete 10 games');
 assert(asymmResult.winsA + asymmResult.winsB + asymmResult.draws === 10, 'Wins + draws must equal total games');
 console.log(`✓ Asymmetric Depth Tournament verified (D2 vs D1): D2 wins ${asymmResult.winsA}, D1 wins ${asymmResult.winsB}, draws ${asymmResult.draws}`);
+
+// 13. Draw Contempt & Tactical Repetition Test
+console.log('\n--- 13. Draw Contempt & Tactical Repetition Test ---');
+const contemptGame = new IntransitiveGame();
+const b4 = algebraicToSquare('b4');
+const a4 = algebraicToSquare('a4');
+const h6 = algebraicToSquare('h6');
+const i6 = algebraicToSquare('i6');
+const blueFwd = { from: b4, to: a4, piece: 'R' as const };
+const blueBck = { from: a4, to: b4, piece: 'R' as const };
+const redFwd = { from: h6, to: i6, piece: 'R' as const };
+const redBck = { from: i6, to: h6, piece: 'R' as const };
+
+// Cycle twice: state at b4 occurs 2 times
+contemptGame.makeMove(blueFwd);
+contemptGame.makeMove(redFwd);
+contemptGame.makeMove(blueBck);
+contemptGame.makeMove(redBck);
+contemptGame.makeMove(blueFwd);
+contemptGame.makeMove(redFwd);
+
+// Now it is Blue's turn to move from a4.
+// If Blue plays blueBck (a4 -> b4), it triggers 3-fold repetition!
+// In an equal position: Draw Contempt (-120 cp) causes Blue to REFUSE a4->b4 and make progress!
+const equalDecision = selectMove(contemptGame, heuristicWeights, { depth: 2, temperature: 0.0 });
+assert(
+  equalDecision.bestMove !== null && (equalDecision.bestMove.from !== a4 || equalDecision.bestMove.to !== b4),
+  `When equal, Draw Contempt must reject 3-fold repetition (a4->b4), got ${equalDecision.bestMove?.from}->${equalDecision.bestMove?.to}`
+);
+console.log('✓ Draw Contempt successfully prevents passive 3-fold repetition in equal positions');
+assert(DRAW_CONTEMPT_FACTOR === 120, 'Contempt factor must be 120 cp');
+assert(REPETITION_PENALTY_2FOLD === 60, '2-Fold repetition penalty must be 60 cp');
+
+// 14. Goal-Squatting Prevention Verification
+console.log('\n--- 14. Goal-Squatting Prevention Verification ---');
+// Blue has a Paper on b1 (adjacent to a1). Red's goal is a1.
+const squatGame = new IntransitiveGame('9/9/9/9/9/9/9/9/1P7 b 0 1');
+const b1 = algebraicToSquare('b1');
+const a1 = RED_GOAL_SQUARE;
+const blueMoves = squatGame.generateLegalMoves();
+const blueMoveToA1 = blueMoves.find((m) => m.from === b1 && m.to === a1);
+assert(blueMoveToA1 === undefined, 'Blue piece must NOT be allowed to enter own defending goal (a1)');
+
+// Red has a Paper on h9 (adjacent to i9). Blue's goal is i9.
+const redSquatGame = new IntransitiveGame('7p1/9/9/9/9/9/9/9/9 r 0 1');
+const h9 = algebraicToSquare('h9');
+const i9 = BLUE_GOAL_SQUARE;
+const redMoves = redSquatGame.generateLegalMoves();
+const redMoveToI9 = redMoves.find((m) => m.from === h9 && m.to === i9);
+assert(redMoveToI9 === undefined, 'Red piece must NOT be allowed to enter own defending goal (i9)');
+console.log('✓ Goal-squatting prevention verified: defending teams cannot camp inside opponent touchdown squares');
 
 console.log('\n🎉 ALL INTRANSITIVE TD-LEARNING & ENGINE TESTS PASSED WITH 100% ACCURACY!');

@@ -16,11 +16,12 @@ import {
   Activity,
   Target,
   Clock,
+  ScrollText,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
-import type { Move } from '../core/types';
+import type { Move, Player } from '../core/types';
 import { createZeroWeights, createHeuristicWeights, evaluate } from '../engine/evaluator';
 import { getTopMoves, formatEvalScore } from '../engine/search';
 import type {
@@ -50,6 +51,8 @@ import { ArenaCard } from './ArenaCard';
 import { ArenaRealtimeResultsCard } from './ArenaRealtimeResultsCard';
 import { HumanAnalysisPanel } from './HumanAnalysisPanel';
 import { MoveListSection } from './MoveListSection';
+import { GameAccuracySection } from './GameAccuracySection';
+import { analyzeGameAccuracy } from '../engine/accuracy';
 import { StudioSettingsCard } from './StudioSettingsCard';
 import { sounds } from '../../audio/soundEffects';
 import './intransitive.css';
@@ -137,6 +140,7 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Checkpoints State
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(() => getStoredCheckpoints());
+  const [showAccuracyView, setShowAccuracyView] = useState<boolean>(true);
   const [tournamentResult, setTournamentResult] = useState<{
     winsA: number;
     winsB: number;
@@ -257,6 +261,7 @@ export const IntransitiveStudio: React.FC = () => {
     isSimulating: boolean;
   } | null>(null);
   const [arenaViewMode, setArenaViewMode] = useState<'realtime' | 'notation'>('realtime');
+  const [arenaPanelMode, setArenaPanelMode] = useState<'single' | 'tournament'>('single');
 
   // Volatile state refs to avoid tearing down the Web Worker
   const soundEnabledRef = useRef(soundEnabled);
@@ -343,10 +348,19 @@ export const IntransitiveStudio: React.FC = () => {
     };
   }, [evalModelId, stats, weights, checkpoints]);
 
-  const currentStatus = game.isTerminal();
+  // The definitive terminal status of the full match session (derived from the latest move in moveHistory)
+  const finalGameStatus = useMemo(() => {
+    if (moveHistory.length === 0) {
+      return { isOver: false, winner: null as Player | 'draw' | null, reason: undefined as string | undefined };
+    }
+    const lastEntry = moveHistory[moveHistory.length - 1];
+    const finalG = new IntransitiveGame(lastEntry.fen);
+    return finalG.isTerminal();
+  }, [moveHistory]);
+
   const isHumanTurn =
     activeTab === 'play' &&
-    !currentStatus.isOver &&
+    !finalGameStatus.isOver &&
     game.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED);
 
   // Synchronous candidate moves (instant baseline at Depth 1 for <1ms latency)
@@ -797,6 +811,7 @@ export const IntransitiveStudio: React.FC = () => {
     setAnalysisTelemetry(null);
     setIsPlayingLive(false);
     setIsZoomingTournament(false);
+    setArenaViewMode('notation');
     zoomQueueRef.current = [];
     pendingTournamentResultRef.current = null;
     const freshGame = new IntransitiveGame();
@@ -805,10 +820,12 @@ export const IntransitiveStudio: React.FC = () => {
     setLastMove(null);
     setMoveHistory([]);
     setHistoryIndex(-1);
+    setShowAccuracyView(true);
   }, []);
 
   // Step Controls
   const handleStepForward = useCallback(() => {
+    setArenaViewMode('notation');
     if (historyIndex < moveHistory.length - 1) {
       const nextIndex = historyIndex + 1;
       const target = moveHistory[nextIndex];
@@ -818,7 +835,7 @@ export const IntransitiveStudio: React.FC = () => {
       setHistoryIndex(nextIndex);
     } else {
       // Ask worker for 1 live step based on current active fighter
-      if (workerRef.current && !game.isTerminal().isOver) {
+      if (workerRef.current && !finalGameStatus.isOver) {
         const isBlue = game.activePlayer === PLAYER_BLUE;
         const activeFighterId = isBlue ? fighterAId : fighterBId;
         const activeDepth = isBlue ? fighterADepth : fighterBDepth;
@@ -831,9 +848,26 @@ export const IntransitiveStudio: React.FC = () => {
         });
       }
     }
-  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
+  }, [historyIndex, moveHistory, game, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById, finalGameStatus.isOver]);
+
+  // Jump to specific ply in move history
+  const handleSelectHistoryIndex = useCallback((index: number) => {
+    if (index === -1) {
+      const startG = new IntransitiveGame();
+      setGame(startG);
+      setLastMove(null);
+      setHistoryIndex(-1);
+    } else if (index >= 0 && index < moveHistory.length) {
+      const target = moveHistory[index];
+      const g = new IntransitiveGame(target.fen);
+      setGame(g);
+      setLastMove(target.move);
+      setHistoryIndex(index);
+    }
+  }, [moveHistory]);
 
   const handleStepBackward = useCallback(() => {
+    setArenaViewMode('notation');
     if (historyIndex > 0) {
       const prevIndex = historyIndex - 1;
       const target = moveHistory[prevIndex];
@@ -842,28 +876,21 @@ export const IntransitiveStudio: React.FC = () => {
       setLastMove(target.move);
       setHistoryIndex(prevIndex);
     } else if (historyIndex === 0) {
-      handleResetGame();
+      handleSelectHistoryIndex(-1);
     }
-  }, [historyIndex, moveHistory, handleResetGame]);
+  }, [historyIndex, moveHistory, handleSelectHistoryIndex]);
 
-  // Jump to specific ply in move history
-  const handleSelectHistoryIndex = useCallback((index: number) => {
-    setIsPlayingLive(false);
-    if (index === -1) {
-      const fresh = new IntransitiveGame();
-      setGame(fresh);
-      setSelectedSquare(null);
-      setLastMove(null);
-      setHistoryIndex(-1);
-    } else if (index >= 0 && index < moveHistory.length) {
-      const target = moveHistory[index];
-      const g = new IntransitiveGame(target.fen);
-      setGame(g);
-      setSelectedSquare(null);
-      setLastMove(target.move);
-      setHistoryIndex(index);
-    }
-  }, [moveHistory]);
+  // Post-Game Accuracy & Evaluation Analysis (evaluated via master model)
+  const gameAccuracyAnalysis = useMemo(() => {
+    if (!finalGameStatus.isOver || moveHistory.length === 0) return null;
+    const evalWeights = getWeightsById(evalModelId);
+    return analyzeGameAccuracy(
+      moveHistory,
+      evalWeights,
+      finalGameStatus.winner,
+      finalGameStatus.reason
+    );
+  }, [finalGameStatus.isOver, finalGameStatus.winner, finalGameStatus.reason, moveHistory, evalModelId, getWeightsById]);
 
   // Human Move Handler
   const handleHumanMove = useCallback((move: Move) => {
@@ -1604,7 +1631,8 @@ export const IntransitiveStudio: React.FC = () => {
           />
         </div>
       ) : (
-        <div className="intransitive-two-col">
+        <>
+          <div className="intransitive-two-col">
           {/* Left Column: 9x9 Board & Mode-Appropriate Controls */}
           <div className="intransitive-col-board">
             {/* Status & Eval Banner */}
@@ -1616,10 +1644,10 @@ export const IntransitiveStudio: React.FC = () => {
                   }`}
                 />
                 <span className="intransitive-turn-text">
-                  {currentStatus.isOver
-                    ? currentStatus.winner === 'draw'
-                      ? 'Game Drawn'
-                      : `${currentStatus.winner === PLAYER_BLUE ? 'Blue' : 'Red'} Wins by ${currentStatus.reason}!`
+                  {finalGameStatus.isOver
+                    ? finalGameStatus.winner === 'draw'
+                      ? 'Game Concluded in a Draw'
+                      : `${finalGameStatus.winner === PLAYER_BLUE ? 'Blue' : 'Red'} Wins by ${finalGameStatus.reason}!`
                     : activeTab === 'play'
                     ? isHumanTurn
                       ? `Your Turn (${humanColor === 'blue' ? 'Blue' : 'Red'})`
@@ -1671,24 +1699,8 @@ export const IntransitiveStudio: React.FC = () => {
               arrows={activeTab === 'play' && isAnalysisEnabled ? candidateMoves.slice(0, analysisMaxRows) : []}
             />
 
-            {/* Bottom Controls: LiveControls for Visual Arena, Human Controls Bar for Human Play */}
-            {activeTab === 'arena' ? (
-              <LiveControls
-                isPlaying={isPlayingLive}
-                onTogglePlay={() => {
-                  if (currentStatus.isOver) handleResetGame();
-                  setIsPlayingLive(!isPlayingLive);
-                }}
-                onStepForward={handleStepForward}
-                onStepBackward={handleStepBackward}
-                onReset={handleResetGame}
-                canStepBack={historyIndex >= 0}
-                canStepForward={!currentStatus.isOver || historyIndex < moveHistory.length - 1}
-                delayMs={delayMs}
-                onChangeDelay={setDelayMs}
-              />
-            ) : (
-              /* Human Play Controls Toolbar */
+            {/* Human Play Controls Toolbar */}
+            {activeTab === 'play' && (
               <div className="intransitive-human-bar">
                 <button
                   type="button"
@@ -1723,88 +1735,117 @@ export const IntransitiveStudio: React.FC = () => {
             )}
 
             {/* Win Condition Callout Modal if Game Ends */}
-            {currentStatus.isOver && (
+            {finalGameStatus.isOver && (
               <div className="intransitive-victory-banner">
                 <div className="intransitive-victory-content">
                   <Trophy size={20} color="#ea580c" />
                   <div>
                     <h4 className="intransitive-victory-title">
-                      {currentStatus.winner === 'draw'
+                      {finalGameStatus.winner === 'draw'
                         ? 'Game Concluded in a Draw'
-                        : `${currentStatus.winner === PLAYER_BLUE ? 'Blue' : 'Red'} Victory!`}
+                        : `${finalGameStatus.winner === PLAYER_BLUE ? 'Blue' : 'Red'} Victory!`}
                     </h4>
                     <p className="intransitive-victory-sub" style={{ textTransform: 'capitalize' }}>
-                      Condition: {currentStatus.reason}
+                      Condition: {finalGameStatus.reason}
+                      {historyIndex >= 0 && historyIndex < moveHistory.length - 1 && (
+                        <span style={{ marginLeft: '8px', color: '#c2410c', fontWeight: 600 }}>
+                          • Reviewing Ply {historyIndex + 1} of {moveHistory.length}
+                        </span>
+                      )}
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleResetGame}
-                  className="intransitive-btn-primary"
-                  style={{ padding: '0.45rem 0.9rem' }}
-                >
-                  Play Again
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  {historyIndex >= 0 && historyIndex < moveHistory.length - 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleSelectHistoryIndex(moveHistory.length - 1)}
+                      className="intransitive-btn-secondary"
+                      style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
+                      title="Jump to final position"
+                    >
+                      End Position
+                    </button>
+                  )}
+                  {gameAccuracyAnalysis && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAccuracyView((prev) => !prev)}
+                      className="intransitive-btn-secondary"
+                      style={{
+                        padding: '0.45rem 0.8rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        fontSize: '0.75rem',
+                      }}
+                      title="Toggle post-game accuracy and evaluation analysis"
+                    >
+                      <Activity size={13} color="#ea580c" />
+                      {showAccuracyView ? 'Show Moves' : 'Show Accuracy'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleResetGame}
+                    className="intransitive-btn-primary"
+                    style={{ padding: '0.45rem 0.9rem' }}
+                  >
+                    Play Again
+                  </button>
+                </div>
               </div>
             )}
           </div>
 
           {/* Right Column: Cards according to Tab Mode */}
           <div className="intransitive-col-cards">
-            {/* Visual Arena Card */}
+            {/* Visual Arena Mode */}
             {activeTab === 'arena' && (
-              <>
-                <ArenaCard
-                  checkpoints={checkpoints}
-                  currentGeneration={stats.generation}
-                  fighterAId={fighterAId}
-                  fighterBId={fighterBId}
-                  onChangeFighterA={(id: string) => {
-                    setFighterAId(id);
-                    handleResetGame();
-                  }}
-                  onChangeFighterB={(id: string) => {
-                    setFighterBId(id);
-                    handleResetGame();
-                  }}
-                  onRunTournament={handleRunTournament}
-                  fighterADepth={fighterADepth}
-                  fighterBDepth={fighterBDepth}
-                  onChangeFighterADepth={setFighterADepth}
-                  onChangeFighterBDepth={setFighterBDepth}
-                  fighterAMode={fighterAMode}
-                  fighterBMode={fighterBMode}
-                  onChangeFighterAMode={setFighterAMode}
-                  onChangeFighterBMode={setFighterBMode}
-                  fighterATimeSec={fighterATimeSec}
-                  fighterBTimeSec={fighterBTimeSec}
-                  onChangeFighterATimeSec={setFighterATimeSec}
-                  onChangeFighterBTimeSec={setFighterBTimeSec}
-                  isPaused={isTournamentPaused}
-                  onPauseTournament={handlePauseTournament}
-                  onResumeTournament={handleResumeTournament}
-                  onStopTournament={handleStopTournament}
-                  onExportJSON={handleExportJSON}
-                  onImportJSON={handleImportJSON}
-                  tournamentResult={tournamentResult}
-                  isSimulating={isZoomingTournament || Boolean(arenaLiveResults?.isSimulating)}
-                  isZoomEnabled={tournamentZoomEnabled}
-                  onToggleZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
-                />
+              <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+                {/* Segmented Mode Selector: Single Game vs Tournament (Mutually Exclusive) */}
+                <div className="intransitive-arena-mode-segmented">
+                  <button
+                    type="button"
+                    onClick={() => setArenaPanelMode('single')}
+                    className={`intransitive-mode-segmented-btn ${arenaPanelMode === 'single' ? 'active' : ''}`}
+                  >
+                    <Swords size={13} />
+                    <span>Single Game Exhibition</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setArenaPanelMode('tournament')}
+                    className={`intransitive-mode-segmented-btn ${arenaPanelMode === 'tournament' ? 'active' : ''}`}
+                  >
+                    <Trophy size={13} />
+                    <span>Multi-Game Tournament</span>
+                    {arenaLiveResults && (
+                      <span className="mode-segmented-count">
+                        {arenaLiveResults.winsA + arenaLiveResults.winsB + arenaLiveResults.draws}/{arenaLiveResults.totalGames}
+                      </span>
+                    )}
+                  </button>
+                </div>
 
-                {(isZoomingTournament || arenaLiveResults?.isSimulating || (arenaLiveResults && arenaViewMode === 'realtime')) && arenaViewMode === 'realtime' ? (
-                  <ArenaRealtimeResultsCard
-                    isSimulating={Boolean(isZoomingTournament || arenaLiveResults?.isSimulating)}
-                    isPaused={isTournamentPaused}
-                    onPause={handlePauseTournament}
-                    onResume={handleResumeTournament}
-                    onStop={handleStopTournament}
-                    gameIndex={arenaLiveResults?.gameIndex ?? 1}
-                    totalGames={arenaLiveResults?.totalGames ?? 20}
-                    winsA={arenaLiveResults?.winsA ?? 0}
-                    winsB={arenaLiveResults?.winsB ?? 0}
-                    draws={arenaLiveResults?.draws ?? 0}
+                {arenaPanelMode === 'single' ? (
+                  <LiveControls
+                    isPlaying={isPlayingLive}
+                    onTogglePlay={() => {
+                      if (finalGameStatus.isOver) handleResetGame();
+                      setIsPlayingLive(!isPlayingLive);
+                      setArenaViewMode('notation');
+                    }}
+                    onStepForward={handleStepForward}
+                    onStepBackward={handleStepBackward}
+                    onReset={() => {
+                      handleResetGame();
+                      setArenaViewMode('notation');
+                    }}
+                    canStepBack={historyIndex >= 0}
+                    canStepForward={!finalGameStatus.isOver || historyIndex < moveHistory.length - 1}
+                    delayMs={delayMs}
+                    onChangeDelay={setDelayMs}
                     fighterAName={checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
                     fighterBName={checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
                     fighterADepth={fighterADepth}
@@ -1813,66 +1854,183 @@ export const IntransitiveStudio: React.FC = () => {
                     fighterBMode={fighterBMode}
                     fighterATimeSec={fighterATimeSec}
                     fighterBTimeSec={fighterBTimeSec}
-                    currentPly={moveHistory.length}
-                    lastSan={lastMove ? game.formatMoveSAN(lastMove) : ''}
-                    onToggleView={() => setArenaViewMode('notation')}
+                    currentPly={historyIndex + 1}
+                    totalPlies={moveHistory.length}
+                    isGameOver={finalGameStatus.isOver}
+                    winner={finalGameStatus.winner}
+                    reason={finalGameStatus.reason}
+                    onJumpToStart={() => handleSelectHistoryIndex(-1)}
+                    onJumpToEnd={() => handleSelectHistoryIndex(moveHistory.length - 1)}
                   />
                 ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                    {arenaLiveResults && (
-                      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                        <button
-                          type="button"
-                          onClick={() => setArenaViewMode('realtime')}
-                          className="intransitive-mini-btn"
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '0.3rem',
-                            fontSize: '0.69rem',
-                            padding: '0.2rem 0.55rem',
-                          }}
-                        >
-                          <Activity size={12} color="#ea580c" /> Show Real-time Results
-                        </button>
-                      </div>
+                  <>
+                    {(isZoomingTournament || arenaLiveResults?.isSimulating || (arenaLiveResults && arenaViewMode === 'realtime')) && arenaViewMode === 'realtime' ? (
+                      <ArenaRealtimeResultsCard
+                        isSimulating={Boolean(isZoomingTournament || arenaLiveResults?.isSimulating)}
+                        isPaused={isTournamentPaused}
+                        onPause={handlePauseTournament}
+                        onResume={handleResumeTournament}
+                        onStop={handleStopTournament}
+                        gameIndex={arenaLiveResults?.gameIndex ?? 1}
+                        totalGames={arenaLiveResults?.totalGames ?? 20}
+                        winsA={arenaLiveResults?.winsA ?? 0}
+                        winsB={arenaLiveResults?.winsB ?? 0}
+                        draws={arenaLiveResults?.draws ?? 0}
+                        fighterAName={checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A'}
+                        fighterBName={checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B'}
+                        fighterADepth={fighterADepth}
+                        fighterBDepth={fighterBDepth}
+                        fighterAMode={fighterAMode}
+                        fighterBMode={fighterBMode}
+                        fighterATimeSec={fighterATimeSec}
+                        fighterBTimeSec={fighterBTimeSec}
+                        currentPly={moveHistory.length}
+                        lastSan={lastMove ? game.formatMoveSAN(lastMove) : ''}
+                        onToggleView={() => setArenaViewMode('notation')}
+                      />
+                    ) : (
+                      <ArenaCard
+                        checkpoints={checkpoints}
+                        currentGeneration={stats.generation}
+                        fighterAId={fighterAId}
+                        fighterBId={fighterBId}
+                        onChangeFighterA={(id: string) => {
+                          setFighterAId(id);
+                          handleResetGame();
+                        }}
+                        onChangeFighterB={(id: string) => {
+                          setFighterBId(id);
+                          handleResetGame();
+                        }}
+                        onRunTournament={(...args) => {
+                          setArenaPanelMode('tournament');
+                          handleRunTournament(...args);
+                        }}
+                        fighterADepth={fighterADepth}
+                        fighterBDepth={fighterBDepth}
+                        onChangeFighterADepth={setFighterADepth}
+                        onChangeFighterBDepth={setFighterBDepth}
+                        fighterAMode={fighterAMode}
+                        fighterBMode={fighterBMode}
+                        onChangeFighterAMode={setFighterAMode}
+                        onChangeFighterBMode={setFighterBMode}
+                        fighterATimeSec={fighterATimeSec}
+                        fighterBTimeSec={fighterBTimeSec}
+                        onChangeFighterATimeSec={setFighterATimeSec}
+                        onChangeFighterBTimeSec={setFighterBTimeSec}
+                        isPaused={isTournamentPaused}
+                        onPauseTournament={handlePauseTournament}
+                        onResumeTournament={handleResumeTournament}
+                        onStopTournament={handleStopTournament}
+                        onExportJSON={handleExportJSON}
+                        onImportJSON={handleImportJSON}
+                        tournamentResult={tournamentResult}
+                        isSimulating={isZoomingTournament || Boolean(arenaLiveResults?.isSimulating)}
+                        isZoomEnabled={tournamentZoomEnabled}
+                        onToggleZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
+                      />
                     )}
-                    <MoveListSection
-                      moves={moveHistory}
-                      currentIndex={historyIndex}
-                      onSelectIndex={handleSelectHistoryIndex}
-                    />
-                  </div>
+                  </>
                 )}
-              </>
+              </div>
             )}
 
             {/* Human Play Mode */}
             {activeTab === 'play' && (
-              <>
-                <HumanAnalysisPanel
-                  isEnabled={isAnalysisEnabled}
-                  onToggleEnabled={() => setIsAnalysisEnabled(!isAnalysisEnabled)}
-                  selectedModelName={activeEvalModel.name}
-                  maxRows={analysisMaxRows}
-                  onChangeMaxRows={setAnalysisMaxRows}
-                  candidateMoves={candidateMoves}
-                  onApplyMove={handleHumanMove}
-                  isHumanTurn={isHumanTurn}
-                  telemetry={displayedTelemetry}
-                  targetDepth={analysisTargetDepth}
-                  onChangeTargetDepth={handleTargetDepthChange}
-                />
+              <HumanAnalysisPanel
+                isEnabled={isAnalysisEnabled}
+                onToggleEnabled={() => setIsAnalysisEnabled(!isAnalysisEnabled)}
+                selectedModelName={activeEvalModel.name}
+                maxRows={analysisMaxRows}
+                onChangeMaxRows={setAnalysisMaxRows}
+                candidateMoves={candidateMoves}
+                onApplyMove={handleHumanMove}
+                isHumanTurn={isHumanTurn}
+                telemetry={displayedTelemetry}
+                targetDepth={analysisTargetDepth}
+                onChangeTargetDepth={handleTargetDepthChange}
+              />
+            )}
+          </div>
+        </div>
 
+        {/* Full-Width Horizontal Bottom Strip for Move Notation & Accuracy Evaluation */}
+        {(moveHistory.length > 0 || (finalGameStatus.isOver && gameAccuracyAnalysis)) && (
+          <div className="intransitive-bottom-strip">
+            <div className="intransitive-bottom-strip-header">
+              <div className="intransitive-bottom-strip-tabs">
+                {finalGameStatus.isOver && gameAccuracyAnalysis && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAccuracyView(true)}
+                    className={`intransitive-bottom-tab ${showAccuracyView ? 'active' : ''}`}
+                  >
+                    <Activity size={14} color="#ea580c" />
+                    <span>Accuracy & Evaluation Analysis</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAccuracyView(false)}
+                  className={`intransitive-bottom-tab ${!showAccuracyView || !finalGameStatus.isOver ? 'active' : ''}`}
+                >
+                  <ScrollText size={14} />
+                  <span>Move Notation ({moveHistory.length} {moveHistory.length === 1 ? 'ply' : 'plies'})</span>
+                </button>
+              </div>
+
+              <div className="intransitive-bottom-strip-meta">
+                {historyIndex >= 0 && historyIndex < moveHistory.length - 1 && (
+                  <button
+                    type="button"
+                    onClick={() => handleSelectHistoryIndex(moveHistory.length - 1)}
+                    className="intransitive-mini-btn"
+                    style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}
+                  >
+                    Jump to End (Ply {moveHistory.length})
+                  </button>
+                )}
+                {finalGameStatus.isOver ? (
+                  <span className="intransitive-meta-badge end">Game Concluded</span>
+                ) : (
+                  <span className="intransitive-meta-badge live">Move {Math.floor(moveHistory.length / 2) + 1}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="intransitive-bottom-strip-body">
+              {finalGameStatus.isOver && gameAccuracyAnalysis && showAccuracyView ? (
+                <GameAccuracySection
+                  analysis={gameAccuracyAnalysis}
+                  blueName={
+                    activeTab === 'arena'
+                      ? checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A (Blue)'
+                      : humanColor === 'blue'
+                      ? 'You (Human)'
+                      : `Computer (${checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'AI'})`
+                  }
+                  redName={
+                    activeTab === 'arena'
+                      ? checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B (Red)'
+                      : humanColor === 'red'
+                      ? 'You (Human)'
+                      : `Computer (${checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'AI'})`
+                  }
+                  modelName={activeEvalModel.name}
+                  currentPlyIndex={historyIndex}
+                  onSelectPly={handleSelectHistoryIndex}
+                />
+              ) : (
                 <MoveListSection
                   moves={moveHistory}
                   currentIndex={historyIndex}
                   onSelectIndex={handleSelectHistoryIndex}
                 />
-              </>
-            )}
+              )}
+            </div>
           </div>
-        </div>
+        )}
+        </>
       )}
     </div>
   );

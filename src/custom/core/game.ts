@@ -50,7 +50,14 @@ export class IntransitiveGame {
   public zobristKey: bigint;
 
   private undoStack: UndoRecord[] = [];
-  private repetitionMap: Map<bigint, number> = new Map();
+  public repetitionMap: Map<bigint, number> = new Map();
+
+  /**
+   * Returns how many times a given Zobrist key (defaulting to current position) has occurred.
+   */
+  public getRepetitionCount(key: bigint = this.zobristKey): number {
+    return this.repetitionMap.get(key) || 0;
+  }
 
   // Instantaneous material tracking
   public blueCounts: PieceCounts = { R: 0, P: 0, S: 0, total: 0 };
@@ -136,9 +143,11 @@ export class IntransitiveGame {
       const piece = decodePiece(code);
       if (!piece || piece.player !== player) continue;
 
+      const ownDefendingGoal = player === PLAYER_BLUE ? RED_GOAL_SQUARE : BLUE_GOAL_SQUARE;
       const neighbors = ADJACENCY_TABLE[sq];
       for (let i = 0; i < neighbors.length; i++) {
         const toSq = neighbors[i];
+        if (toSq === ownDefendingGoal) continue; // Goal-squatting prevention
         const targetCode = this.board[toSq];
 
         if (targetCode === EMPTY) {
@@ -334,9 +343,11 @@ export class IntransitiveGame {
       const piece = decodePiece(code);
       if (!piece || piece.player !== this.activePlayer) continue;
 
+      const ownDefendingGoal = this.activePlayer === PLAYER_BLUE ? RED_GOAL_SQUARE : BLUE_GOAL_SQUARE;
       const neighbors = ADJACENCY_TABLE[sq];
       for (let i = 0; i < neighbors.length; i++) {
         const toSq = neighbors[i];
+        if (toSq === ownDefendingGoal) continue;
         const targetCode = this.board[toSq];
 
         if (targetCode === EMPTY) {

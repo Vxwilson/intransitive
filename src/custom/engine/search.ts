@@ -35,6 +35,9 @@ export function formatEvalScore(
   return score > 0 ? `+${score}` : `${score}`;
 }
 
+export const DRAW_CONTEMPT_FACTOR = 120;
+export const REPETITION_PENALTY_2FOLD = 60;
+
 /**
  * Chebyshev distance to goal square (number of king-steps).
  */
@@ -42,6 +45,38 @@ export function goalChebyshevDist(sq: number, goalSq: number): number {
   const r1 = Math.floor(sq / 9), c1 = sq % 9;
   const r2 = Math.floor(goalSq / 9), c2 = goalSq % 9;
   return Math.max(Math.abs(r1 - r2), Math.abs(c1 - c2));
+}
+
+/**
+ * Orders moves tactically: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity.
+ */
+export function orderMovesTactically(moves: Move[], activePlayer: typeof PLAYER_BLUE | typeof PLAYER_RED): void {
+  if (moves.length <= 1) return;
+  const goalSquare = activePlayer === PLAYER_BLUE ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
+  moves.sort((a, b) => {
+    const aGoal = a.to === goalSquare ? 20000 : 0;
+    const bGoal = b.to === goalSquare ? 20000 : 0;
+    if (aGoal !== bGoal) return bGoal - aGoal;
+
+    const aDist = goalChebyshevDist(a.to, goalSquare);
+    const bDist = goalChebyshevDist(b.to, goalSquare);
+
+    // Distance 1 runner threat (immediate M1 threat)
+    const aD1 = aDist === 1 ? 10000 : 0;
+    const bD1 = bDist === 1 ? 10000 : 0;
+    if (aD1 !== bD1) return bD1 - aD1;
+
+    // Distance 2 runner threat
+    const aD2 = aDist === 2 ? 3000 : 0;
+    const bD2 = bDist === 2 ? 3000 : 0;
+    if (aD2 !== bD2) return bD2 - aD2;
+
+    const aCap = a.captured !== undefined ? 1500 : 0;
+    const bCap = b.captured !== undefined ? 1500 : 0;
+    if (aCap !== bCap) return bCap - aCap;
+
+    return aDist - bDist;
+  });
 }
 
 /**
@@ -62,6 +97,14 @@ export function minimax(
   if (status.isOver) {
     if (status.winner === PLAYER_BLUE) return WIN_SCORE - ply;
     if (status.winner === PLAYER_RED) return LOSS_SCORE + ply;
+    // Terminal draw (repetition or 50-move): apply contempt against whichever side chose to enter the draw.
+    // If ply > 0, game.activePlayer is the opponent of the player who made the move.
+    // E.g., if game.activePlayer === PLAYER_RED, then PLAYER_BLUE just moved to trigger the draw.
+    // Since minimax score is from Blue's perspective, a penalty on Blue is -DRAW_CONTEMPT_FACTOR.
+    // If game.activePlayer === PLAYER_BLUE, PLAYER_RED just moved, so Blue gains +DRAW_CONTEMPT_FACTOR.
+    if (ply > 0) {
+      return game.activePlayer === PLAYER_RED ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
+    }
     return DRAW_SCORE;
   }
   if (depth === 0) {
@@ -78,31 +121,7 @@ export function minimax(
 
   // Tactical move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
   if (depth > 1 && moves.length > 1) {
-    const goalSquare = game.activePlayer === PLAYER_BLUE ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
-    moves.sort((a, b) => {
-      const aGoal = a.to === goalSquare ? 20000 : 0;
-      const bGoal = b.to === goalSquare ? 20000 : 0;
-      if (aGoal !== bGoal) return bGoal - aGoal;
-
-      const aDist = goalChebyshevDist(a.to, goalSquare);
-      const bDist = goalChebyshevDist(b.to, goalSquare);
-
-      // Distance 1 runner threat (immediate M1 threat)
-      const aD1 = aDist === 1 ? 10000 : 0;
-      const bD1 = bDist === 1 ? 10000 : 0;
-      if (aD1 !== bD1) return bD1 - aD1;
-
-      // Distance 2 runner threat
-      const aD2 = aDist === 2 ? 3000 : 0;
-      const bD2 = bDist === 2 ? 3000 : 0;
-      if (aD2 !== bD2) return bD2 - aD2;
-
-      const aCap = a.captured !== undefined ? 1500 : 0;
-      const bCap = b.captured !== undefined ? 1500 : 0;
-      if (aCap !== bCap) return bCap - aCap;
-
-      return aDist - bDist;
-    });
+    orderMovesTactically(moves, game.activePlayer);
   }
 
   const isMaximizing = game.activePlayer === PLAYER_BLUE;
@@ -111,7 +130,16 @@ export function minimax(
     let maxEval = -Infinity;
     for (let i = 0; i < moves.length; i++) {
       game.makeMove(moves[i]);
-      const score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
+      const repCount = game.getRepetitionCount();
+      let score: number;
+      if (repCount >= 3) {
+        score = -DRAW_CONTEMPT_FACTOR;
+      } else {
+        score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
+        if (repCount === 2) {
+          score -= REPETITION_PENALTY_2FOLD;
+        }
+      }
       game.unmakeMove();
 
       if (score > maxEval) {
@@ -129,7 +157,16 @@ export function minimax(
     let minEval = Infinity;
     for (let i = 0; i < moves.length; i++) {
       game.makeMove(moves[i]);
-      const score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
+      const repCount = game.getRepetitionCount();
+      let score: number;
+      if (repCount >= 3) {
+        score = DRAW_CONTEMPT_FACTOR;
+      } else {
+        score = minimax(game, depth - 1, alpha, beta, weights, ply + 1, context);
+        if (repCount === 2) {
+          score += REPETITION_PENALTY_2FOLD;
+        }
+      }
       game.unmakeMove();
 
       if (score < minEval) {
@@ -195,6 +232,9 @@ function selectMoveFixedDepth(
   const activeTemp = isOpening ? temperature : 0.0;
   const activeNoise = isOpening ? rootNoise : 0.0;
 
+  // Root move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
+  orderMovesTactically(moves, game.activePlayer);
+
   const isMaximizing = game.activePlayer === PLAYER_BLUE;
   const scoredMoves: Array<{ move: Move; score: number }> = [];
 
@@ -203,10 +243,26 @@ function selectMoveFixedDepth(
     game.makeMove(move);
 
     let score: number;
-    if (depth <= 1) {
-      score = evaluate(game, weights);
+    const term = game.isTerminal();
+    const repCount = game.getRepetitionCount();
+
+    if (term.isOver) {
+      if (term.winner === PLAYER_BLUE) {
+        score = WIN_SCORE - 1;
+      } else if (term.winner === PLAYER_RED) {
+        score = LOSS_SCORE + 1;
+      } else {
+        score = isMaximizing ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
+      }
     } else {
-      score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1);
+      if (depth <= 1) {
+        score = evaluate(game, weights);
+      } else {
+        score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1);
+      }
+      if (repCount === 2) {
+        score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
+      }
     }
 
     game.unmakeMove();
@@ -444,32 +500,8 @@ export function getTopMoves(
   const isMaximizing = game.activePlayer === PLAYER_BLUE;
 
   // Root move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
-  if (depth > 1 && moves.length > 1) {
-    const goalSquare = isMaximizing ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
-    moves.sort((a, b) => {
-      const aGoal = a.to === goalSquare ? 20000 : 0;
-      const bGoal = b.to === goalSquare ? 20000 : 0;
-      if (aGoal !== bGoal) return bGoal - aGoal;
-
-      const aDist = goalChebyshevDist(a.to, goalSquare);
-      const bDist = goalChebyshevDist(b.to, goalSquare);
-
-      // Distance 1 runner threat (immediate M1 threat)
-      const aD1 = aDist === 1 ? 10000 : 0;
-      const bD1 = bDist === 1 ? 10000 : 0;
-      if (aD1 !== bD1) return bD1 - aD1;
-
-      // Distance 2 runner threat
-      const aD2 = aDist === 2 ? 3000 : 0;
-      const bD2 = bDist === 2 ? 3000 : 0;
-      if (aD2 !== bD2) return bD2 - aD2;
-
-      const aCap = a.captured !== undefined ? 1500 : 0;
-      const bCap = b.captured !== undefined ? 1500 : 0;
-      if (aCap !== bCap) return bCap - aCap;
-
-      return aDist - bDist;
-    });
+  if (moves.length > 1) {
+    orderMovesTactically(moves, game.activePlayer);
   }
 
   const scoredMoves: Array<{
@@ -491,15 +523,31 @@ export function getTopMoves(
     game.makeMove(move);
 
     let score: number;
-    // If a decisive forced mate is already found in top candidates, shallow-eval distant moves
-    if (hasDecisiveMate && i >= count) {
+    const term = game.isTerminal();
+    const repCount = game.getRepetitionCount();
+
+    if (term.isOver) {
+      if (term.winner === PLAYER_BLUE) {
+        score = WIN_SCORE - 1;
+      } else if (term.winner === PLAYER_RED) {
+        score = LOSS_SCORE + 1;
+      } else {
+        score = isMaximizing ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
+      }
+    } else if (hasDecisiveMate && i >= count) {
       if (context) context.nodes++;
       score = evaluate(game, weights);
     } else if (depth <= 1) {
       if (context) context.nodes++;
       score = evaluate(game, weights);
+      if (repCount === 2) {
+        score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
+      }
     } else {
       score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1, context);
+      if (repCount === 2) {
+        score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
+      }
     }
 
     game.unmakeMove();
@@ -524,6 +572,8 @@ export function getTopMoves(
     let threat: string | undefined;
     if (san.includes('#')) {
       threat = 'Touchdown Goal';
+    } else if (term.isOver && term.winner === 'draw') {
+      threat = 'Draw (Repetition/50M)';
     } else if (isMate) {
       const movesToMate = Math.max(1, Math.ceil((mateInPlies ?? 1) / 2));
       threat = `🏆 Forced Win (M${movesToMate})`;
