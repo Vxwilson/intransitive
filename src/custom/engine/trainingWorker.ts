@@ -224,6 +224,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           return;
         }
 
+        const aIsBlue = gameIdx % 2 === 0;
         const gameRes = SelfPlayTrainer.playArenaGame(
           gameIdx,
           totalGames,
@@ -243,6 +244,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
                 currentWinsA: winsA,
                 currentWinsB: winsB,
                 currentDraws: draws,
+                fighterAIsBlue: aIsBlue,
               });
             }
           },
@@ -273,6 +275,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           currentWinsA: winsA,
           currentWinsB: winsB,
           currentDraws: draws,
+          fighterAIsBlue: aIsBlue,
         });
 
         if (gameIdx < totalGames && !arenaCancelled) {

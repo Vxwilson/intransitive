@@ -3,7 +3,7 @@
  * Displays paired turns (Blue & Red), active ply highlight, and time-travel navigation controls.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useRef } from 'react';
 import { ChevronFirst, ChevronLeft, ChevronRight, ChevronLast, ScrollText } from 'lucide-react';
 import type { Move } from '../core/types';
 
@@ -42,15 +42,7 @@ export const MoveListSection: React.FC<MoveListSectionProps> = ({
     });
   }
 
-  // Scroll active move into view smoothly
-  useEffect(() => {
-    if (scrollRef.current) {
-      const activeEl = scrollRef.current.querySelector('.intransitive-movelist-btn.active');
-      if (activeEl) {
-        activeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }
-  }, [currentIndex, moves.length]);
+  // Autoscroll removed: users prefer to stay focused on the board during live play
 
   return (
     <div className="intransitive-movelist-card">

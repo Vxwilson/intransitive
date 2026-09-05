@@ -248,6 +248,7 @@ export const IntransitiveStudio: React.FC = () => {
     currentWinsA?: number;
     currentWinsB?: number;
     currentDraws?: number;
+    fighterAIsBlue?: boolean;
   }[]>([]);
   const pendingTournamentResultRef = useRef<any>(null);
   const [isZoomingTournament, setIsZoomingTournament] = useState<boolean>(false);
@@ -259,6 +260,7 @@ export const IntransitiveStudio: React.FC = () => {
     winsB: number;
     draws: number;
     isSimulating: boolean;
+    fighterAIsBlue?: boolean;
   } | null>(null);
   const [arenaViewMode, setArenaViewMode] = useState<'realtime' | 'notation'>('realtime');
   const [arenaPanelMode, setArenaPanelMode] = useState<'single' | 'tournament'>('single');
@@ -611,6 +613,7 @@ export const IntransitiveStudio: React.FC = () => {
               winsB: data.currentWinsB ?? 0,
               draws: data.currentDraws ?? 0,
               isSimulating: true,
+              fighterAIsBlue: data.fighterAIsBlue,
             });
           }
           break;
@@ -718,6 +721,7 @@ export const IntransitiveStudio: React.FC = () => {
         currentWinsA?: number;
         currentWinsB?: number;
         currentDraws?: number;
+        fighterAIsBlue?: boolean;
       } | null = null;
       for (let b = 0; b < batchSize; b++) {
         const item = zoomQueueRef.current.shift();
@@ -740,6 +744,7 @@ export const IntransitiveStudio: React.FC = () => {
             winsB: lastNext.currentWinsB ?? 0,
             draws: lastNext.currentDraws ?? 0,
             isSimulating: true,
+            fighterAIsBlue: lastNext.fighterAIsBlue,
           });
         }
 
@@ -1741,6 +1746,35 @@ export const IntransitiveStudio: React.FC = () => {
               </div>
             </div>
 
+            {/* Tournament Fighter Color Indicator - shows which model is Blue/Red for current game */}
+            {activeTab === 'arena' && arenaPanelMode === 'tournament' && arenaLiveResults && (
+              <div className="intransitive-fighter-color-strip">
+                <div className="intransitive-fighter-color-tag blue">
+                  <span className="intransitive-fighter-dot blue" />
+                  <span className="intransitive-fighter-color-label">Blue:</span>
+                  <span className="intransitive-fighter-color-name">
+                    {(arenaLiveResults.fighterAIsBlue !== false
+                      ? (checkpoints.find((c) => c.id === fighterAId)?.name?.split(' ')[0] || 'Fighter A')
+                      : (checkpoints.find((c) => c.id === fighterBId)?.name?.split(' ')[0] || 'Fighter B')
+                    )}
+                  </span>
+                </div>
+                <span className="intransitive-fighter-color-game">
+                  Game {arenaLiveResults.gameIndex}/{arenaLiveResults.totalGames}
+                </span>
+                <div className="intransitive-fighter-color-tag red">
+                  <span className="intransitive-fighter-dot red" />
+                  <span className="intransitive-fighter-color-label">Red:</span>
+                  <span className="intransitive-fighter-color-name">
+                    {(arenaLiveResults.fighterAIsBlue !== false
+                      ? (checkpoints.find((c) => c.id === fighterBId)?.name?.split(' ')[0] || 'Fighter B')
+                      : (checkpoints.find((c) => c.id === fighterAId)?.name?.split(' ')[0] || 'Fighter A')
+                    )}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Interactive 9x9 Board with Candidate Arrows (in Human Play) */}
             <IntransitiveBoard
               game={game}
@@ -1854,6 +1888,8 @@ export const IntransitiveStudio: React.FC = () => {
                     reason={finalGameStatus.reason}
                     onJumpToStart={() => handleSelectHistoryIndex(-1)}
                     onJumpToEnd={() => handleSelectHistoryIndex(moveHistory.length - 1)}
+                    onChangeFighterADepth={setFighterADepth}
+                    onChangeFighterBDepth={setFighterBDepth}
                   />
                 ) : (
                   <>
@@ -1921,6 +1957,7 @@ export const IntransitiveStudio: React.FC = () => {
                         isSimulating={isZoomingTournament || Boolean(arenaLiveResults?.isSimulating)}
                         isZoomEnabled={tournamentZoomEnabled}
                         onToggleZoom={() => setTournamentZoomEnabled(!tournamentZoomEnabled)}
+                        arenaLiveResults={arenaLiveResults}
                       />
                     )}
                   </>

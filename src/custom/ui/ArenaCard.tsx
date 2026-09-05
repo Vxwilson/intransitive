@@ -70,6 +70,15 @@ interface ArenaCardProps {
   isSimulating?: boolean;
   isZoomEnabled?: boolean;
   onToggleZoom?: () => void;
+  arenaLiveResults?: {
+    gameIndex: number;
+    totalGames: number;
+    winsA: number;
+    winsB: number;
+    draws: number;
+    isSimulating: boolean;
+    fighterAIsBlue?: boolean;
+  } | null;
 }
 
 export const ArenaCard: React.FC<ArenaCardProps> = ({
@@ -99,6 +108,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
   isSimulating = false,
   isZoomEnabled = true,
   onToggleZoom,
+  arenaLiveResults,
 }) => {
   const [customGames, setCustomGames] = useState<number>(20);
 
@@ -258,6 +268,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                   onChange={(e) => onChangeFighterADepth?.(parseInt(e.target.value, 10))}
                   className="intransitive-range-slider blue"
                   disabled={isSimulating}
+                  style={{ height: '4px' }}
                 />
                 <div className="intransitive-slider-ticks">
                   <span>D1</span>
@@ -372,6 +383,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                   onChange={(e) => onChangeFighterBDepth?.(parseInt(e.target.value, 10))}
                   className="intransitive-range-slider red"
                   disabled={isSimulating}
+                  style={{ height: '4px' }}
                 />
                 <div className="intransitive-slider-ticks">
                   <span>D1</span>
@@ -522,13 +534,45 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
           )}
         </div>
 
+        {/* Inline Live Results During Simulation */}
+        {isSimulating && arenaLiveResults && (() => {
+          const liveGames = arenaLiveResults.winsA + arenaLiveResults.winsB + arenaLiveResults.draws;
+          const liveWinRateA = liveGames > 0 ? Math.round((arenaLiveResults.winsA / liveGames) * 100) : 0;
+          const liveWinRateB = liveGames > 0 ? Math.round((arenaLiveResults.winsB / liveGames) * 100) : 0;
+          const liveDrawRate = liveGames > 0 ? Math.round((arenaLiveResults.draws / liveGames) * 100) : 0;
+          const progress = Math.min(100, Math.round((Math.max(liveGames, arenaLiveResults.gameIndex) / arenaLiveResults.totalGames) * 100));
+          return (
+            <div className="intransitive-arena-inline-results">
+              <span className="intransitive-arena-inline-score" style={{ color: '#7c3aed' }}>
+                ◆ {arenaLiveResults.winsA}
+              </span>
+              <span className="intransitive-arena-inline-draw">
+                — {arenaLiveResults.draws}
+              </span>
+              <span className="intransitive-arena-inline-score" style={{ color: '#c2410c' }}>
+                ◇ {arenaLiveResults.winsB}
+              </span>
+              <div className="intransitive-arena-inline-bar">
+                <div className="intransitive-win-bar" style={{ height: '6px', borderRadius: '3px' }}>
+                  <div className="intransitive-win-seg-a" style={{ width: `${liveWinRateA}%`, transition: 'width 0.2s ease', background: '#7c3aed' }} />
+                  <div className="intransitive-win-seg-draw" style={{ width: `${liveDrawRate}%`, transition: 'width 0.2s ease' }} />
+                  <div className="intransitive-win-seg-b" style={{ width: `${liveWinRateB}%`, transition: 'width 0.2s ease', background: '#c2410c' }} />
+                </div>
+              </div>
+              <span className="intransitive-arena-inline-progress">
+                {arenaLiveResults.gameIndex}/{arenaLiveResults.totalGames} ({progress}%)
+              </span>
+            </div>
+          );
+        })()}
+
         {/* Tournament Result Telemetry */}
         {tournamentResult && (
           <div className="intransitive-tournament-result-box">
             {/* Wins Summary */}
             <div className="intransitive-tournament-scores">
-              <span style={{ color: '#2563eb', fontWeight: 700 }}>
-                {checkpointA?.name?.split(' ')[0] || 'Fighter A'} (
+              <span style={{ color: '#7c3aed', fontWeight: 700 }}>
+                ◆ {checkpointA?.name?.split(' ')[0] || 'Fighter A'} (
                 {tournamentResult.thinkTimeSecA ? `${tournamentResult.thinkTimeSecA}s` : `D${tournamentResult.depthA ?? fighterADepth}`}
                 ): {tournamentResult.winsA} ({tournamentResult.winRateA}%)
               </span>
@@ -540,8 +584,8 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                   </span>
                 )}
               </span>
-              <span style={{ color: '#ea580c', fontWeight: 700 }}>
-                {checkpointB?.name?.split(' ')[0] || 'Fighter B'} (
+              <span style={{ color: '#c2410c', fontWeight: 700 }}>
+                ◇ {checkpointB?.name?.split(' ')[0] || 'Fighter B'} (
                 {tournamentResult.thinkTimeSecB ? `${tournamentResult.thinkTimeSecB}s` : `D${tournamentResult.depthB ?? fighterBDepth}`}
                 ): {tournamentResult.winsB} ({tournamentResult.winRateB}%)
               </span>
@@ -578,9 +622,9 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                 <Target size={12} color="#059669" />
                 <span>Tactical Accuracy:</span>
                 <strong>
-                  <span style={{ color: '#2563eb' }}>{tournamentResult.accuracyA ?? 50}%</span>
+              <span style={{ color: '#7c3aed' }}>{tournamentResult.accuracyA ?? 50}%</span>
                   {' / '}
-                  <span style={{ color: '#ea580c' }}>{tournamentResult.accuracyB ?? 50}%</span>
+                  <span style={{ color: '#c2410c' }}>{tournamentResult.accuracyB ?? 50}%</span>
                 </strong>
               </div>
             </div>

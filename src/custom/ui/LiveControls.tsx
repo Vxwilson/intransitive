@@ -10,7 +10,17 @@ import {
   Zap,
   Swords,
   Trophy,
+  Target,
 } from 'lucide-react';
+
+const DEPTH_SHORT: Record<number, string> = {
+  1: 'D1 Fast',
+  2: 'D2 Tactical',
+  3: 'D3 Deep',
+  4: 'D4 Master',
+  5: 'D5 Grand',
+  6: 'D6 Ultra',
+};
 
 export interface LiveControlsProps {
   isPlaying: boolean;
@@ -38,6 +48,8 @@ export interface LiveControlsProps {
   reason?: string | null;
   onJumpToStart?: () => void;
   onJumpToEnd?: () => void;
+  onChangeFighterADepth?: (depth: number) => void;
+  onChangeFighterBDepth?: (depth: number) => void;
 }
 
 export const LiveControls: React.FC<LiveControlsProps> = ({
@@ -65,12 +77,14 @@ export const LiveControls: React.FC<LiveControlsProps> = ({
   reason = '',
   onJumpToStart,
   onJumpToEnd,
+  onChangeFighterADepth,
+  onChangeFighterBDepth,
 }) => {
   const labelA = fighterAMode === 'time' ? `${fighterATimeSec}s` : `D${fighterADepth}`;
   const labelB = fighterBMode === 'time' ? `${fighterBTimeSec}s` : `D${fighterBDepth}`;
 
   return (
-    <div className="intransitive-toolbar-card intransitive-exhibition-card compact">
+    <div className="intransitive-toolbar-card intransitive-exhibition-card">
       {/* Header: Title + Dynamic Match Status */}
       <div className="intransitive-exhibition-header">
         <div className="intransitive-exhibition-title-group">
@@ -123,6 +137,93 @@ export const LiveControls: React.FC<LiveControlsProps> = ({
           <span className="duel-spec">{labelB}</span>
         </div>
       </div>
+
+      {/* Depth Sliders for Each Fighter */}
+      {(onChangeFighterADepth || onChangeFighterBDepth) && (
+        <div style={{
+          display: 'flex',
+          gap: '0.75rem',
+          padding: '0.45rem 0.6rem',
+          background: '#faf8f5',
+          borderRadius: '8px',
+          border: '1px solid #eee8de',
+        }}>
+          {/* Fighter A Depth */}
+          {fighterAMode === 'depth' && onChangeFighterADepth && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: 700, color: '#1d4ed8' }}>
+                  <Target size={10} color="#2563eb" />
+                  {fighterAName.split(' ')[0]}
+                </span>
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontWeight: 700,
+                  color: '#1d4ed8',
+                  background: '#eff6ff',
+                  padding: '0.05rem 0.35rem',
+                  borderRadius: '3px',
+                  border: '1px solid #bfdbfe',
+                  fontSize: '0.64rem',
+                }}>
+                  {DEPTH_SHORT[fighterADepth] || `D${fighterADepth}`}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="6"
+                step="1"
+                value={fighterADepth}
+                onChange={(e) => onChangeFighterADepth(parseInt(e.target.value, 10))}
+                className="intransitive-range-slider blue"
+                disabled={isPlaying}
+                style={{ height: '4px' }}
+              />
+            </div>
+          )}
+
+          {/* Separator */}
+          {fighterAMode === 'depth' && fighterBMode === 'depth' && onChangeFighterADepth && onChangeFighterBDepth && (
+            <div style={{ width: '1px', background: '#eee8de', alignSelf: 'stretch' }} />
+          )}
+
+          {/* Fighter B Depth */}
+          {fighterBMode === 'depth' && onChangeFighterBDepth && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.68rem' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: 700, color: '#c2410c' }}>
+                  <Target size={10} color="#ea580c" />
+                  {fighterBName.split(' ')[0]}
+                </span>
+                <span style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontWeight: 700,
+                  color: '#c2410c',
+                  background: '#fff7ed',
+                  padding: '0.05rem 0.35rem',
+                  borderRadius: '3px',
+                  border: '1px solid #fed7aa',
+                  fontSize: '0.64rem',
+                }}>
+                  {DEPTH_SHORT[fighterBDepth] || `D${fighterBDepth}`}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="6"
+                step="1"
+                value={fighterBDepth}
+                onChange={(e) => onChangeFighterBDepth(parseInt(e.target.value, 10))}
+                className="intransitive-range-slider red"
+                disabled={isPlaying}
+                style={{ height: '4px' }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Primary Action + Navigation Controls Row */}
       <div className="intransitive-exhibition-actions-row">

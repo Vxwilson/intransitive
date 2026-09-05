@@ -193,6 +193,7 @@ export type WorkerResponse =
       currentWinsA?: number;
       currentWinsB?: number;
       currentDraws?: number;
+      fighterAIsBlue?: boolean;
     }
   | {
       type: 'ARENA_RESULT';

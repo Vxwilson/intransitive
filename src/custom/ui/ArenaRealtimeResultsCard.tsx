@@ -227,26 +227,26 @@ export const ArenaRealtimeResultsCard: React.FC<ArenaRealtimeResultsCardProps> =
               style={{
                 fontSize: '0.7rem',
                 fontWeight: 700,
-                color: '#2563eb',
+                color: '#7c3aed',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}
               title={`${fighterAName} (${labelA})`}
             >
-              🔵 {displayNameA} ({labelA})
+              ◆ {displayNameA} ({labelA})
             </span>
             <span
               style={{
                 fontSize: '1.25rem',
                 fontWeight: 800,
                 fontFamily: "'JetBrains Mono', monospace",
-                color: '#1e3a8a',
+                color: '#5b21b6',
               }}
             >
               {winsA}
             </span>
-            <span style={{ fontSize: '0.68rem', color: '#64748b', fontWeight: 600 }}>
+            <span style={{ fontSize: '0.68rem', color: '#7c3aed', fontWeight: 600 }}>
               {winRateA}%
             </span>
           </div>
@@ -262,7 +262,7 @@ export const ArenaRealtimeResultsCard: React.FC<ArenaRealtimeResultsCardProps> =
             }}
           >
             <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#786f66' }}>
-              🤝 Draws
+              — Draws
             </span>
             <span
               style={{
@@ -285,14 +285,14 @@ export const ArenaRealtimeResultsCard: React.FC<ArenaRealtimeResultsCardProps> =
               style={{
                 fontSize: '0.7rem',
                 fontWeight: 700,
-                color: '#ea580c',
+                color: '#c2410c',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
               }}
               title={`${fighterBName} (${labelB})`}
             >
-              🔴 {displayNameB} ({labelB})
+              ◇ {displayNameB} ({labelB})
             </span>
             <span
               style={{
