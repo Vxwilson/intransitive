@@ -41,6 +41,7 @@ import {
   importCheckpointsJSON,
   createInitialStats,
   PRESET_CHECKPOINTS,
+  LEGACY_CHECKPOINT_IDS,
   getDefaultCheckpointName,
 } from '../engine/checkpoint';
 import { IntransitiveBoard } from './IntransitiveBoard';
@@ -160,8 +161,8 @@ export const IntransitiveStudio: React.FC = () => {
   } | null>(null);
 
   // Visual Arena Fighters Selection
-  const [fighterAId, setFighterAId] = useState<string>(initialSettings.fighterAId ?? 'current');
-  const [fighterBId, setFighterBId] = useState<string>(initialSettings.fighterBId ?? 'preset-heuristic-master');
+  const [fighterAId, setFighterAId] = useState<string>(initialSettings.fighterAId ?? 'preset-novice');
+  const [fighterBId, setFighterBId] = useState<string>(initialSettings.fighterBId ?? 'preset-master');
   const [tournamentZoomEnabled, setTournamentZoomEnabled] = useState<boolean>(
     initialSettings.tournamentZoomEnabled ?? true
   );
@@ -196,7 +197,7 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Human Play Settings
   const [selectedOpponentId, setSelectedOpponentId] = useState<string>(
-    initialSettings.selectedOpponentId ?? 'preset-heuristic-master'
+    initialSettings.selectedOpponentId ?? 'preset-intermediate'
   );
   const [playOpponentMode, setPlayOpponentMode] = useState<'depth' | 'time'>(
     initialSettings.playOpponentMode ?? 'depth'
@@ -213,8 +214,7 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Coupled Engine Model for Evaluation & Human Play Move Analysis
   const [evalModelId, setEvalModelId] = useState<string>(
-
-    initialSettings.evalModelId ?? 'preset-heuristic-master'
+    initialSettings.evalModelId ?? 'preset-master'
   );
   const [isAnalysisEnabled, setIsAnalysisEnabled] = useState<boolean>(
     initialSettings.isAnalysisEnabled ?? true
@@ -287,16 +287,18 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Helper to fetch weights for a model identifier
   const getWeightsById = useCallback((id: string): EvaluationWeights => {
-    if (id === 'current') return weights;
-    if (id === 'preset-heuristic-master') return createHeuristicWeights();
-    if (id === 'preset-gen-0') return createZeroWeights();
-    const cp = checkpoints.find((c) => c.id === id);
+    const targetId = LEGACY_CHECKPOINT_IDS[id] || id;
+    if (targetId === 'current') return weights;
+    if (targetId === 'preset-heuristic-master') return createHeuristicWeights();
+    if (targetId === 'preset-gen-0') return createZeroWeights();
+    const cp = checkpoints.find((c) => c.id === targetId);
     return cp ? cp.weights : weights;
   }, [weights, checkpoints]);
 
   // Coupled active evaluation model (used for both board eval and candidate move analysis)
   const activeEvalModel = useMemo(() => {
-    if (evalModelId === 'preset-heuristic-master') {
+    const targetId = LEGACY_CHECKPOINT_IDS[evalModelId] || evalModelId;
+    if (targetId === 'preset-heuristic-master') {
       return {
         id: 'preset-heuristic-master',
         name: 'Heuristic Master',
@@ -306,7 +308,7 @@ export const IntransitiveStudio: React.FC = () => {
         weights: createHeuristicWeights(),
       };
     }
-    if (evalModelId === 'preset-gen-0') {
+    if (targetId === 'preset-gen-0') {
       return {
         id: 'preset-gen-0',
         name: 'Gen 0 Tabula Rasa',
@@ -316,7 +318,7 @@ export const IntransitiveStudio: React.FC = () => {
         weights: createZeroWeights(),
       };
     }
-    if (evalModelId === 'current') {
+    if (targetId === 'current') {
       return {
         id: 'current',
         name: `Current Model (Gen ${stats.generation})`,
@@ -326,9 +328,17 @@ export const IntransitiveStudio: React.FC = () => {
         weights: weights,
       };
     }
-    const cp = checkpoints.find((c) => c.id === evalModelId);
+    const cp = checkpoints.find((c) => c.id === targetId);
     if (cp) {
-      const label = cp.name.startsWith('Gen ') ? cp.name.split('_')[0] : `Gen ${cp.generation}`;
+      const label = cp.name.includes('Novice')
+        ? 'Novice'
+        : cp.name.includes('Intermediate')
+        ? 'Intermediate'
+        : cp.name.includes('Master')
+        ? 'Master'
+        : cp.name.startsWith('Gen ')
+        ? cp.name.split('_')[0]
+        : `Gen ${cp.generation}`;
       return {
         id: cp.id,
         name: cp.name,
@@ -339,12 +349,12 @@ export const IntransitiveStudio: React.FC = () => {
       };
     }
     return {
-      id: 'preset-heuristic-master',
-      name: 'Heuristic Master',
-      displayName: 'Heuristic',
-      generation: 0,
-      gamesPlayed: 10000,
-      weights: createHeuristicWeights(),
+      id: 'preset-master',
+      name: 'Master (TD-Leaf Trained)',
+      displayName: 'Master',
+      generation: 800,
+      gamesPlayed: 800,
+      weights: checkpoints.find((c) => c.id === 'preset-master')?.weights ?? createHeuristicWeights(),
     };
   }, [evalModelId, stats, weights, checkpoints]);
 
@@ -1291,16 +1301,27 @@ export const IntransitiveStudio: React.FC = () => {
                   onChange={(e) => setSelectedOpponentId(e.target.value)}
                   className="intransitive-dropdown mini"
                 >
-                  <option value="preset-heuristic-master">🏆 Heuristic Master (Boss)</option>
-                  <option value="current">🤖 Current Model (Gen {stats.generation})</option>
-                  <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Easy)</option>
-                  {checkpoints
-                    .filter((c) => !c.id.startsWith('preset-'))
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        💾 {c.name} (Gen {c.generation})
-                      </option>
-                    ))}
+                  <optgroup label="Trained AI Models">
+                    <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
+                    <option value="preset-intermediate">🥈 Intermediate (TD-Leaf Trained)</option>
+                    <option value="preset-novice">🥉 Novice (TD-Leaf Trained)</option>
+                  </optgroup>
+                  <optgroup label="Benchmarks & Baselines">
+                    <option value="preset-heuristic-master">🏆 Heuristic Master (Boss)</option>
+                    <option value="current">🤖 Current Model (Gen {stats.generation})</option>
+                    <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Easy)</option>
+                  </optgroup>
+                  {checkpoints.some((c) => !c.id.startsWith('preset-')) && (
+                    <optgroup label="Saved Checkpoints">
+                      {checkpoints
+                        .filter((c) => !c.id.startsWith('preset-'))
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            💾 {c.name} (Gen {c.generation})
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
                 </select>
               </div>
 
@@ -1427,16 +1448,27 @@ export const IntransitiveStudio: React.FC = () => {
                 className="intransitive-dropdown mini"
                 title="Fighter A (Plays Blue)"
               >
-                <option value="current">🤖 Current Model (Gen {stats.generation})</option>
-                <option value="preset-heuristic-master">🏆 Heuristic Master</option>
-                <option value="preset-gen-0">👶 Gen 0 Tabula Rasa</option>
-                {checkpoints
-                  .filter((c) => !c.id.startsWith('preset-'))
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      💾 {c.name}
-                    </option>
-                  ))}
+                <optgroup label="Trained AI Models">
+                  <option value="preset-novice">🥉 Novice (Trained)</option>
+                  <option value="preset-intermediate">🥈 Intermediate (Trained)</option>
+                  <option value="preset-master">🥇 Master (Trained)</option>
+                </optgroup>
+                <optgroup label="Benchmarks & Baselines">
+                  <option value="current">🤖 Current Model (Gen {stats.generation})</option>
+                  <option value="preset-heuristic-master">🏆 Heuristic Master</option>
+                  <option value="preset-gen-0">👶 Gen 0 Tabula Rasa</option>
+                </optgroup>
+                {checkpoints.some((c) => !c.id.startsWith('preset-')) && (
+                  <optgroup label="Saved Checkpoints">
+                    {checkpoints
+                      .filter((c) => !c.id.startsWith('preset-'))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          💾 {c.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
               </select>
 
               <span className="intransitive-strip-vs">vs</span>
@@ -1450,16 +1482,27 @@ export const IntransitiveStudio: React.FC = () => {
                 className="intransitive-dropdown mini"
                 title="Fighter B (Plays Red)"
               >
-                <option value="preset-heuristic-master">🏆 Heuristic Master</option>
-                <option value="current">🤖 Current Model (Gen {stats.generation})</option>
-                <option value="preset-gen-0">👶 Gen 0 Tabula Rasa</option>
-                {checkpoints
-                  .filter((c) => !c.id.startsWith('preset-'))
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      💾 {c.name}
-                    </option>
-                  ))}
+                <optgroup label="Trained AI Models">
+                  <option value="preset-master">🥇 Master (Trained)</option>
+                  <option value="preset-intermediate">🥈 Intermediate (Trained)</option>
+                  <option value="preset-novice">🥉 Novice (Trained)</option>
+                </optgroup>
+                <optgroup label="Benchmarks & Baselines">
+                  <option value="preset-heuristic-master">🏆 Heuristic Master</option>
+                  <option value="current">🤖 Current Model (Gen {stats.generation})</option>
+                  <option value="preset-gen-0">👶 Gen 0 Tabula Rasa</option>
+                </optgroup>
+                {checkpoints.some((c) => !c.id.startsWith('preset-')) && (
+                  <optgroup label="Saved Checkpoints">
+                    {checkpoints
+                      .filter((c) => !c.id.startsWith('preset-'))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          💾 {c.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
               </select>
 
               <button
@@ -1484,17 +1527,28 @@ export const IntransitiveStudio: React.FC = () => {
                 }}
                 className="intransitive-dropdown mini"
               >
-                <option value="preset-gen-0">👶 None / From Scratch (Tabula Rasa Gen 0)</option>
-                <option value="preset-heuristic-master">🏆 Heuristic Master (Benchmark)</option>
-                {checkpoints
-                  .filter((c) => !c.id.startsWith('preset-'))
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      💾 {c.name} (Gen {c.generation})
-                    </option>
-                  ))}
-                {isCustomInMemory && (
-                  <option value="current">🤖 Current In-Memory Weights (Gen {stats.generation})</option>
+                <optgroup label="Trained Baselines">
+                  <option value="preset-master">🥇 Master (TD-Leaf Gen 800)</option>
+                  <option value="preset-intermediate">🥈 Intermediate (TD-Leaf Gen 300)</option>
+                  <option value="preset-novice">🥉 Novice (TD-Leaf Gen 1300)</option>
+                </optgroup>
+                <optgroup label="From Scratch / Heuristic">
+                  <option value="preset-gen-0">👶 None / From Scratch (Tabula Rasa Gen 0)</option>
+                  <option value="preset-heuristic-master">🏆 Heuristic Master (Benchmark)</option>
+                  {isCustomInMemory && (
+                    <option value="current">🤖 Current In-Memory Weights (Gen {stats.generation})</option>
+                  )}
+                </optgroup>
+                {checkpoints.some((c) => !c.id.startsWith('preset-')) && (
+                  <optgroup label="Saved Checkpoints">
+                    {checkpoints
+                      .filter((c) => !c.id.startsWith('preset-'))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          💾 {c.name} (Gen {c.generation})
+                        </option>
+                      ))}
+                  </optgroup>
                 )}
               </select>
 

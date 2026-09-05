@@ -42,15 +42,18 @@ export function getDefaultCheckpointName(gamesPlayed: number): string {
   return `Gen ${gamesPlayed}_${mm}${dd}_${hh}${min}${ss}`;
 }
 
+import {
+  PRESET_NOVICE,
+  PRESET_INTERMEDIATE,
+  PRESET_MASTER,
+  LEGACY_CHECKPOINT_IDS,
+} from './defaultCheckpoints';
+export { LEGACY_CHECKPOINT_IDS };
+
 export const PRESET_CHECKPOINTS: Checkpoint[] = [
-  {
-    id: 'preset-gen-0',
-    name: 'Gen 0 (Tabula Rasa / 0-Knowledge)',
-    generation: 0,
-    timestamp: 1700000000000,
-    weights: createZeroWeights(),
-    stats: createInitialStats(0),
-  },
+  PRESET_MASTER,
+  PRESET_INTERMEDIATE,
+  PRESET_NOVICE,
   {
     id: 'preset-heuristic-master',
     name: 'Heuristic Benchmark (Hand-Tuned Master)',
@@ -69,6 +72,14 @@ export const PRESET_CHECKPOINTS: Checkpoint[] = [
         { generation: 1000, R: 100, P: 100, S: 100, blueWinRate: 50 },
       ],
     },
+  },
+  {
+    id: 'preset-gen-0',
+    name: 'Gen 0 (Tabula Rasa / 0-Knowledge)',
+    generation: 0,
+    timestamp: 1700000000000,
+    weights: createZeroWeights(),
+    stats: createInitialStats(0),
   },
 ];
 
@@ -102,7 +113,12 @@ export function getStoredCheckpoints(): Checkpoint[] {
       return [...PRESET_CHECKPOINTS];
     }
     const userCheckpoints: Checkpoint[] = JSON.parse(raw);
-    return [...PRESET_CHECKPOINTS, ...userCheckpoints];
+    const presetIds = new Set(PRESET_CHECKPOINTS.map((p) => p.id));
+    // Filter out checkpoints that match presets or legacy IDs to prevent duplicates
+    const cleanUser = userCheckpoints.filter(
+      (c) => !presetIds.has(c.id) && !LEGACY_CHECKPOINT_IDS[c.id]
+    );
+    return [...PRESET_CHECKPOINTS, ...cleanUser];
   } catch (err) {
     console.error('Failed to parse checkpoints from storage:', err);
     return [...PRESET_CHECKPOINTS];
@@ -138,7 +154,7 @@ export function saveCheckpoint(
 }
 
 export function deleteCheckpoint(id: string): boolean {
-  if (id.startsWith('preset-')) return false; // Prevent deleting built-in presets
+  if (id.startsWith('preset-') || LEGACY_CHECKPOINT_IDS[id]) return false; // Prevent deleting built-in presets
   const storage = getStorage();
 
   try {
@@ -155,7 +171,7 @@ export function deleteCheckpoint(id: string): boolean {
 }
 
 export function renameCheckpoint(id: string, newName: string): boolean {
-  if (id.startsWith('preset-')) return false; // Prevent renaming built-in presets
+  if (id.startsWith('preset-') || LEGACY_CHECKPOINT_IDS[id]) return false; // Prevent renaming built-in presets
   const trimmed = newName.trim();
   if (!trimmed) return false;
   const storage = getStorage();

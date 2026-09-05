@@ -176,16 +176,27 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
               className="intransitive-dropdown"
               style={{ minWidth: '240px', fontWeight: 600 }}
             >
-              <option value="preset-heuristic-master">🏆 Heuristic Master (Baseline Handcrafted)</option>
-              <option value="current">🤖 Current In-Memory Model (Gen {currentGeneration})</option>
-              <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Untrained Zeros)</option>
-              {checkpoints
-                .filter((c) => !c.id.startsWith('preset-'))
-                .map((c) => (
-                  <option key={c.id} value={c.id}>
-                    💾 {c.name}
-                  </option>
-                ))}
+              <optgroup label="Trained AI Models">
+                <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
+                <option value="preset-intermediate">🥈 Intermediate (TD-Leaf Trained)</option>
+                <option value="preset-novice">🥉 Novice (TD-Leaf Trained)</option>
+              </optgroup>
+              <optgroup label="Benchmarks & Baselines">
+                <option value="preset-heuristic-master">🏆 Heuristic Master (Baseline Handcrafted)</option>
+                <option value="current">🤖 Current In-Memory Model (Gen {currentGeneration})</option>
+                <option value="preset-gen-0">👶 Gen 0 Tabula Rasa (Untrained Zeros)</option>
+              </optgroup>
+              {checkpoints.some((c) => !c.id.startsWith('preset-')) && (
+                <optgroup label="Saved Checkpoints">
+                  {checkpoints
+                    .filter((c) => !c.id.startsWith('preset-'))
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        💾 {c.name}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
             </select>
 
             <span style={{ fontSize: '0.72rem', color: '#059669', fontWeight: 600 }}>
@@ -368,16 +379,27 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                 className="intransitive-dropdown mini"
                 style={{ maxWidth: '200px' }}
               >
-                <option value="preset-heuristic-master">🏆 Heuristic Master</option>
-                <option value="current">🤖 Current Model</option>
-                <option value="preset-gen-0">👶 Gen 0 Tabula Rasa</option>
-                {checkpoints
-                  .filter((c) => !c.id.startsWith('preset-'))
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      💾 {c.name}
-                    </option>
-                  ))}
+                <optgroup label="Trained AI Models">
+                  <option value="preset-master">🥇 Master</option>
+                  <option value="preset-intermediate">🥈 Intermediate</option>
+                  <option value="preset-novice">🥉 Novice</option>
+                </optgroup>
+                <optgroup label="Benchmarks & Baselines">
+                  <option value="preset-heuristic-master">🏆 Heuristic Master</option>
+                  <option value="current">🤖 Current Model</option>
+                  <option value="preset-gen-0">👶 Gen 0 Tabula Rasa</option>
+                </optgroup>
+                {checkpoints.some((c) => !c.id.startsWith('preset-')) && (
+                  <optgroup label="Saved Checkpoints">
+                    {checkpoints
+                      .filter((c) => !c.id.startsWith('preset-'))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          💾 {c.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                )}
               </select>
             </div>
 
