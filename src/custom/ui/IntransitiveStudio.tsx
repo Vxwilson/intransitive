@@ -165,8 +165,8 @@ export const IntransitiveStudio: React.FC = () => {
     history: [{ generation: 0, R: 0, P: 0, S: 0, blueWinRate: 50 }],
   }));
 
-  // UI Modes & Controls
-  const [activeTab, setActiveTab] = useState<StudioTab>('arena');
+  // UI Modes & Controls (Human Play is the primary default tab)
+  const [activeTab, setActiveTab] = useState<StudioTab>('play');
 
   // Active game context derived from current tab
   const isPlayTab = activeTab === 'play';
@@ -275,6 +275,7 @@ export const IntransitiveStudio: React.FC = () => {
   const [humanColor, setHumanColor] = useState<'blue' | 'red'>(
     initialSettings.humanColor ?? 'blue'
   );
+  const isManualMode = selectedOpponentId === 'manual';
 
   // Coupled Engine Model for Evaluation & Human Play Move Analysis
   const [evalModelId, setEvalModelId] = useState<string>(
@@ -507,7 +508,7 @@ export const IntransitiveStudio: React.FC = () => {
   const isHumanTurn =
     activeTab === 'play' &&
     !finalGameStatus.isOver &&
-    activeGame.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED);
+    (isManualMode || activeGame.activePlayer === (humanColor === 'blue' ? PLAYER_BLUE : PLAYER_RED));
 
   // Synchronous candidate moves (instant baseline at Depth 1 for <1ms latency)
   const syncCandidateMoves = useMemo(() => {
@@ -1138,8 +1139,8 @@ export const IntransitiveStudio: React.FC = () => {
       analysisWorkerRef.current = null;
     }
 
-    // Trigger AI response using selected opponent's weights and configured depth/thinkTime
-    if (activeTab === 'play' && !nextGame.isTerminal().isOver) {
+    // Trigger AI response using selected opponent's weights and configured depth/thinkTime (only in PvE mode)
+    if (activeTab === 'play' && !nextGame.isTerminal().isOver && selectedOpponentId !== 'manual') {
       const opponentWeights = getWeightsById(selectedOpponentId);
       const isOppNNUE = 'w0' in opponentWeights;
       if (workerRef.current) {
@@ -1175,8 +1176,8 @@ export const IntransitiveStudio: React.FC = () => {
     // Auto-adjust board flip if human plays Red
     if (color === 'red') {
       setPlayIsBoardFlipped(true);
-      // AI plays first as Blue
-      if (workerRef.current) {
+      // AI plays first as Blue if not in manual Pass & Play mode
+      if (opponentId !== 'manual' && workerRef.current) {
         const opponentWeights = getWeightsById(opponentId);
         const isOppNNUE = 'w0' in opponentWeights;
         workerRef.current.postMessage({
@@ -1193,20 +1194,21 @@ export const IntransitiveStudio: React.FC = () => {
     }
   }, [playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
-  // Undo in Human Play (steps back 2 plies to human's turn)
+  // Undo in Human Play (steps back 2 plies in PvE to human's turn, or 1 ply in manual PvP)
   const handleUndoHumanMove = useCallback(() => {
     if (analysisWorkerRef.current) {
       analysisWorkerRef.current.terminate();
       analysisWorkerRef.current = null;
     }
     setAnalysisTelemetry(null);
-    if (playHistoryIndex >= 1) {
-      const targetIndex = playHistoryIndex - 2 >= 0 ? playHistoryIndex - 2 : -1;
+    const stepBack = isManualMode ? 1 : 2;
+    if (playHistoryIndex >= stepBack - 1) {
+      const targetIndex = playHistoryIndex - stepBack >= 0 ? playHistoryIndex - stepBack : -1;
       handleSelectHistoryIndex(targetIndex);
-    } else if (playHistoryIndex === 0) {
+    } else if (playHistoryIndex >= 0) {
       handleSelectHistoryIndex(-1);
     }
-  }, [playHistoryIndex, handleSelectHistoryIndex]);
+  }, [playHistoryIndex, handleSelectHistoryIndex, isManualMode]);
 
   // Generate standard PGN for the active match
   const getActiveGamePGN = useCallback(() => {
@@ -1214,13 +1216,18 @@ export const IntransitiveStudio: React.FC = () => {
     let blueName = 'Player';
     let redName = 'Intransitive AI';
     if (isPlay) {
-      const oppName = checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'Computer';
-      if (humanColor === 'blue') {
-        blueName = 'Human';
-        redName = oppName;
+      if (selectedOpponentId === 'manual') {
+        blueName = 'Player 1 (Blue)';
+        redName = 'Player 2 (Red)';
       } else {
-        blueName = oppName;
-        redName = 'Human';
+        const oppName = checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'Computer';
+        if (humanColor === 'blue') {
+          blueName = 'Human';
+          redName = oppName;
+        } else {
+          blueName = oppName;
+          redName = 'Human';
+        }
       }
     } else {
       blueName = allArenaCheckpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A';
@@ -1239,7 +1246,7 @@ export const IntransitiveStudio: React.FC = () => {
       : '*';
 
     return generateGamePGN({
-      event: isPlay ? 'Human vs AI Exhibition' : 'Arena Exhibition Match',
+      event: isPlay ? (selectedOpponentId === 'manual' ? 'Manual Pass & Play Match' : 'Human vs AI Exhibition') : 'Arena Exhibition Match',
       site: 'Intransitive Studio',
       white: blueName,
       black: redName,
@@ -1312,7 +1319,8 @@ export const IntransitiveStudio: React.FC = () => {
         setPlayHistoryIndex(-1);
 
         // Trigger opponent AI move if it's the AI's turn
-        const isHuman = (humanColor === 'blue' && testGame.activePlayer === PLAYER_BLUE) ||
+        const isHuman = selectedOpponentId === 'manual' ||
+                        (humanColor === 'blue' && testGame.activePlayer === PLAYER_BLUE) ||
                         (humanColor === 'red' && testGame.activePlayer === PLAYER_RED);
 
         if (!isHuman && !testGame.isTerminal().isOver) {
@@ -1674,6 +1682,17 @@ export const IntransitiveStudio: React.FC = () => {
             <button
               type="button"
               onClick={() => {
+                setActiveTab('play');
+                setIsPlayingLive(false);
+              }}
+              className={`intransitive-tab-button ${activeTab === 'play' ? 'active' : ''}`}
+            >
+              <Gamepad2 size={14} color="#059669" /> Human Play
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
                 setActiveTab('arena');
                 setIsPlayingLive(false);
               }}
@@ -1691,17 +1710,6 @@ export const IntransitiveStudio: React.FC = () => {
               className={`intransitive-tab-button ${activeTab === 'turbo' ? 'active' : ''}`}
             >
               <Zap size={14} color="#ea580c" /> Turbo Trainer
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('play');
-                setIsPlayingLive(false);
-              }}
-              className={`intransitive-tab-button ${activeTab === 'play' ? 'active' : ''}`}
-            >
-              <Gamepad2 size={14} color="#059669" /> Human Play
             </button>
 
             <button
@@ -1735,6 +1743,9 @@ export const IntransitiveStudio: React.FC = () => {
                   onChange={(e) => setSelectedOpponentId(e.target.value)}
                   className="intransitive-dropdown mini"
                 >
+                  <optgroup label="Play Mode">
+                    <option value="manual">👥 Pass & Play (Human vs Human)</option>
+                  </optgroup>
                   <optgroup label="Trained AI Models">
                     <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
                     <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
@@ -1761,102 +1772,132 @@ export const IntransitiveStudio: React.FC = () => {
                 </select>
               </div>
 
-              {/* Opponent Engine Search Mode: Mutually Exclusive [ Depth | Time ] */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                <div className="intransitive-segmented-switch">
-                  <button
-                    type="button"
-                    onClick={() => setPlayOpponentMode('depth')}
-                    className={`intransitive-segmented-btn ${playOpponentMode === 'depth' ? 'active' : ''}`}
-                    title="Fixed search depth (D1-D6)"
+              {/* Opponent Engine Search Mode: Mutually Exclusive [ Depth | Time ], or Pass & Play Badge */}
+              {isManualMode ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <span
+                    style={{
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      color: '#059669',
+                      background: '#ecfdf5',
+                      border: '1px solid #a7f3d0',
+                      padding: '0.2rem 0.55rem',
+                      borderRadius: '6px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.3rem',
+                    }}
+                    title="Manual Play: 2 players taking turns locally, no engine thinking"
                   >
-                    <Target size={11} /> Depth
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setPlayOpponentMode('time')}
-                    className={`intransitive-segmented-btn ${playOpponentMode === 'time' ? 'active' : ''}`}
-                    title="Allotted thinking time per move"
-                  >
-                    <Clock size={11} /> Time
-                  </button>
+                    👥 Pass & Play (No Engine)
+                  </span>
                 </div>
-
-                {playOpponentMode === 'depth' ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                    <input
-                      type="range"
-                      min="1"
-                      max="6"
-                      step="1"
-                      value={playOpponentDepth}
-                      onChange={(e) => setPlayOpponentDepth(parseInt(e.target.value, 10))}
-                      className="intransitive-range-slider"
-                      style={{ width: '80px' }}
-                      title={`Opponent search depth: D${playOpponentDepth}`}
-                    />
-                    <span
-                      style={{
-                        fontSize: '0.72rem',
-                        fontWeight: 800,
-                        fontFamily: "'JetBrains Mono', monospace",
-                        color: '#ea580c',
-                        background: '#fff7ed',
-                        padding: '0.1rem 0.35rem',
-                        borderRadius: '4px',
-                        border: '1px solid #fed7aa',
-                        minWidth: '26px',
-                        textAlign: 'center',
-                      }}
-                      title={`Depth ${playOpponentDepth}`}
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <div className="intransitive-segmented-switch">
+                    <button
+                      type="button"
+                      onClick={() => setPlayOpponentMode('depth')}
+                      className={`intransitive-segmented-btn ${playOpponentMode === 'depth' ? 'active' : ''}`}
+                      title="Fixed search depth (D1-D6)"
                     >
-                      D{playOpponentDepth}
-                    </span>
+                      <Target size={11} /> Depth
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlayOpponentMode('time')}
+                      className={`intransitive-segmented-btn ${playOpponentMode === 'time' ? 'active' : ''}`}
+                      title="Allotted thinking time per move"
+                    >
+                      <Clock size={11} /> Time
+                    </button>
                   </div>
-                ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                    <input
-                      type="number"
-                      min="0.1"
-                      max="30"
-                      step="0.5"
-                      value={playOpponentTimeSec}
-                      onChange={(e) => setPlayOpponentTimeSec(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
-                      className="intransitive-input-number warm"
-                      style={{ width: '52px', padding: '0.15rem 0.35rem', fontSize: '0.72rem' }}
-                      title="Opponent thinking time per move (seconds)"
-                    />
-                    <span style={{ fontSize: '0.7rem', color: '#6b635b' }}>s</span>
-                    <div className="intransitive-mini-btn-group">
-                      {[0.5, 1.0, 2.0].map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onClick={() => setPlayOpponentTimeSec(s)}
-                          className={`intransitive-mini-btn ${playOpponentTimeSec === s ? 'active' : ''}`}
-                          style={{ padding: '0.15rem 0.35rem', fontSize: '0.65rem' }}
-                        >
-                          {s}s
-                        </button>
-                      ))}
+
+                  {playOpponentMode === 'depth' ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <input
+                        type="range"
+                        min="1"
+                        max="6"
+                        step="1"
+                        value={playOpponentDepth}
+                        onChange={(e) => setPlayOpponentDepth(parseInt(e.target.value, 10))}
+                        className="intransitive-range-slider"
+                        style={{ width: '80px' }}
+                        title={`Opponent search depth: D${playOpponentDepth}`}
+                      />
+                      <span
+                        style={{
+                          fontSize: '0.72rem',
+                          fontWeight: 800,
+                          fontFamily: "'JetBrains Mono', monospace",
+                          color: '#ea580c',
+                          background: '#fff7ed',
+                          padding: '0.1rem 0.35rem',
+                          borderRadius: '4px',
+                          border: '1px solid #fed7aa',
+                          minWidth: '26px',
+                          textAlign: 'center',
+                        }}
+                        title={`Depth ${playOpponentDepth}`}
+                      >
+                        D{playOpponentDepth}
+                      </span>
                     </div>
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="30"
+                        step="0.5"
+                        value={playOpponentTimeSec}
+                        onChange={(e) => setPlayOpponentTimeSec(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
+                        className="intransitive-input-number warm"
+                        style={{ width: '52px', padding: '0.15rem 0.35rem', fontSize: '0.72rem' }}
+                        title="Opponent thinking time per move (seconds)"
+                      />
+                      <span style={{ fontSize: '0.7rem', color: '#6b635b' }}>s</span>
+                      <div className="intransitive-mini-btn-group">
+                        {[0.5, 1.0, 2.0].map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setPlayOpponentTimeSec(s)}
+                            className={`intransitive-mini-btn ${playOpponentTimeSec === s ? 'active' : ''}`}
+                            style={{ padding: '0.15rem 0.35rem', fontSize: '0.65rem' }}
+                          >
+                            {s}s
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                <span className="intransitive-strip-label">Side:</span>
+                <span className="intransitive-strip-label">{isManualMode ? 'View:' : 'Side:'}</span>
                 <button
                   type="button"
-                  onClick={() => setHumanColor('blue')}
+                  onClick={() => {
+                    setHumanColor('blue');
+                    if (isManualMode) setPlayIsBoardFlipped(false);
+                  }}
                   className={`intransitive-mini-btn blue ${humanColor === 'blue' ? 'active' : ''}`}
+                  title={isManualMode ? 'View from Blue perspective' : 'Play as Blue'}
                 >
                   🔵 Blue
                 </button>
                 <button
                   type="button"
-                  onClick={() => setHumanColor('red')}
+                  onClick={() => {
+                    setHumanColor('red');
+                    if (isManualMode) setPlayIsBoardFlipped(true);
+                  }}
                   className={`intransitive-mini-btn red ${humanColor === 'red' ? 'active' : ''}`}
+                  title={isManualMode ? 'View from Red perspective' : 'Play as Red'}
                 >
                   🔴 Red
                 </button>
@@ -2153,7 +2194,9 @@ export const IntransitiveStudio: React.FC = () => {
                       ? 'Game Concluded in a Draw'
                       : `${finalGameStatus.winner === PLAYER_BLUE ? 'Blue' : 'Red'} Wins by ${finalGameStatus.reason}!`
                     : activeTab === 'play'
-                    ? isHumanTurn
+                    ? isManualMode
+                      ? `${activeGame.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'}'s Turn`
+                      : isHumanTurn
                       ? `Your Turn (${humanColor === 'blue' ? 'Blue' : 'Red'})`
                       : playOpponentMode === 'time'
                       ? `Computer is thinking (${playOpponentTimeSec}s)...`
@@ -2250,7 +2293,7 @@ export const IntransitiveStudio: React.FC = () => {
                   disabled={playHistoryIndex < 0}
                   className="intransitive-btn-secondary"
                   style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                  title="Undo previous human and AI move"
+                  title={isManualMode ? 'Undo previous move' : 'Undo previous human and AI move'}
                 >
                   <Undo2 size={14} /> Undo Move
                 </button>
@@ -2516,6 +2559,8 @@ export const IntransitiveStudio: React.FC = () => {
                   blueName={
                     activeTab === 'arena'
                       ? checkpoints.find((c) => c.id === fighterAId)?.name || 'Fighter A (Blue)'
+                      : isManualMode
+                      ? 'Player 1 (Blue)'
                       : humanColor === 'blue'
                       ? 'You (Human)'
                       : `Computer (${checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'AI'})`
@@ -2523,6 +2568,8 @@ export const IntransitiveStudio: React.FC = () => {
                   redName={
                     activeTab === 'arena'
                       ? checkpoints.find((c) => c.id === fighterBId)?.name || 'Fighter B (Red)'
+                      : isManualMode
+                      ? 'Player 2 (Red)'
                       : humanColor === 'red'
                       ? 'You (Human)'
                       : `Computer (${checkpoints.find((c) => c.id === selectedOpponentId)?.name || 'AI'})`

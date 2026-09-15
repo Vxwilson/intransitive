@@ -384,24 +384,24 @@ console.log('✓ Draw Contempt successfully prevents passive 3-fold repetition i
 assert(DRAW_CONTEMPT_FACTOR === 120, 'Contempt factor must be 120 cp');
 assert(REPETITION_PENALTY_2FOLD === 60, '2-Fold repetition penalty must be 60 cp');
 
-// 14. Goal-Squatting Prevention Verification
-console.log('\n--- 14. Goal-Squatting Prevention Verification ---');
-// Blue has a Paper on b1 (adjacent to a1). Red's goal is a1.
-const squatGame = new IntransitiveGame('9/9/9/9/9/9/9/9/1P7 b 0 1');
+// 14. Defending Goal Entry Verification (Legal Goal Defense)
+console.log('\n--- 14. Defending Goal Entry Verification (Legal Goal Defense) ---');
+// Blue has a Paper on b1 (adjacent to a1). Red has a piece on i9 so game is non-terminal. Red's goal is a1.
+const squatGame = new IntransitiveGame('8r/9/9/9/9/9/9/9/1P7 b 0 1');
 const b1 = algebraicToSquare('b1');
 const a1 = RED_GOAL_SQUARE;
 const blueMoves = squatGame.generateLegalMoves();
 const blueMoveToA1 = blueMoves.find((m) => m.from === b1 && m.to === a1);
-assert(blueMoveToA1 === undefined, 'Blue piece must NOT be allowed to enter own defending goal (a1)');
+assert(blueMoveToA1 !== undefined, 'Blue piece MUST be allowed to enter own defending goal (a1)');
 
-// Red has a Paper on h9 (adjacent to i9). Blue's goal is i9.
-const redSquatGame = new IntransitiveGame('7p1/9/9/9/9/9/9/9/9 r 0 1');
+// Red has a Paper on h9 (adjacent to i9). Blue has a piece on a1. Blue's goal is i9.
+const redSquatGame = new IntransitiveGame('7p1/9/9/9/9/9/9/9/R8 r 0 1');
 const h9 = algebraicToSquare('h9');
 const i9 = BLUE_GOAL_SQUARE;
 const redMoves = redSquatGame.generateLegalMoves();
 const redMoveToI9 = redMoves.find((m) => m.from === h9 && m.to === i9);
-assert(redMoveToI9 === undefined, 'Red piece must NOT be allowed to enter own defending goal (i9)');
-console.log('✓ Goal-squatting prevention verified: defending teams cannot camp inside opponent touchdown squares');
+assert(redMoveToI9 !== undefined, 'Red piece MUST be allowed to enter own defending goal (i9)');
+console.log('✓ Defending goal entry verified: players can legally move into their own home goal squares');
 
 // 15. Arbitrary-Distance Runway Detection & Blunder Prevention (User Screenshot Position)
 console.log('\n--- 15. Arbitrary-Distance Runway Detection & Blunder Prevention (User Position) ---');
