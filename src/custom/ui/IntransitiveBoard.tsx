@@ -142,7 +142,7 @@ export const IntransitiveBoard: React.FC<IntransitiveBoardProps> = ({
                     <PieceIcon
                       type={piece.pieceType}
                       player={piece.player as Player}
-                      size={34}
+                      size={41}
                     />
                   </div>
                 )}

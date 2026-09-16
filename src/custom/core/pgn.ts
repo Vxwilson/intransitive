@@ -5,6 +5,9 @@
 
 import { INITIAL_INTRANSITIVE_FEN } from './fen';
 import type { Move } from './types';
+import { PLAYER_BLUE } from './types';
+import { IntransitiveGame } from './game';
+import { algebraicToSquare } from './constants';
 
 export interface PGNGameData {
   event?: string;
@@ -152,7 +155,7 @@ export function parsePGNMoves(pgn: string): string[] {
   // Match tokens
   const tokens = withoutComments.split(/\s+/);
   const moves: string[] = [];
-  const moveRegex = /^[RPSrps][a-i][1-9][\-x][RPSrps]?[a-i][1-9][#]?$/;
+  const moveRegex = /^[RPSrps]?[a-i][1-9][-x][RPSrps]?[a-i][1-9][#]?$/;
 
   for (const token of tokens) {
     const cleaned = token.replace(/^\d+\.+/, '').trim();
@@ -162,3 +165,79 @@ export function parsePGNMoves(pgn: string): string[] {
   }
   return moves;
 }
+
+export interface ReplayPGNResult {
+  finalGame: IntransitiveGame;
+  moves: { move: Move; san: string; fen: string }[];
+  startFen?: string;
+  error?: string;
+}
+
+/**
+ * Replays moves from a standard Intransitive PGN string onto an IntransitiveGame instance.
+ * Supports optional [FEN "..."] header, standard SAN, and coordinate notation.
+ */
+export function replayPGN(pgn: string): ReplayPGNResult {
+  const trimmed = pgn.trim();
+  if (!trimmed) {
+    return { finalGame: new IntransitiveGame(), moves: [], error: 'PGN text is empty' };
+  }
+
+  // Check for custom initial FEN setup header
+  const fenMatch = trimmed.match(/\[FEN\s+"([^"]+)"\]/i);
+  const startFen = fenMatch ? fenMatch[1].trim() : undefined;
+  let game: IntransitiveGame;
+  try {
+    game = startFen ? new IntransitiveGame(startFen) : new IntransitiveGame();
+  } catch (err: any) {
+    return { finalGame: new IntransitiveGame(), moves: [], error: `Invalid FEN in PGN header: ${err.message}` };
+  }
+
+  const tokens = parsePGNMoves(trimmed);
+  const moves: { move: Move; san: string; fen: string }[] = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    const legal = game.generateLegalMoves();
+    const cleanToken = token.replace(/[#+]/g, '');
+
+    // 1. Try exact SAN match
+    let match = legal.find(
+      (m) => game.formatMoveSAN(m).replace(/[#+]/g, '') === cleanToken
+    );
+
+    // 2. Try matching from-square and to-square coordinates
+    if (!match) {
+      const coordMatch = cleanToken.match(/([a-i][1-9])[-x](?:[RPSrps])?([a-i][1-9])/i);
+      if (coordMatch) {
+        const fromSq = algebraicToSquare(coordMatch[1]);
+        const toSq = algebraicToSquare(coordMatch[2]);
+        match = legal.find((m) => m.from === fromSq && m.to === toSq);
+      }
+    }
+
+    if (!match) {
+      return {
+        finalGame: game,
+        moves,
+        startFen,
+        error: `Illegal or unrecognized move at ply ${i + 1} (${game.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'}): "${token}"`,
+      };
+    }
+
+    const sanFormatted = game.formatMoveSAN(match);
+    game.makeMove(match);
+    moves.push({
+      move: match,
+      san: sanFormatted,
+      fen: game.toFEN(),
+    });
+  }
+
+  return {
+    finalGame: game,
+    moves,
+    startFen,
+  };
+}
+

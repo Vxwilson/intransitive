@@ -22,8 +22,9 @@ import {
   FileText,
   X,
   Download,
+  ClipboardPaste,
 } from 'lucide-react';
-import { generateGamePGN, generateTournamentPGN, downloadTextFile } from '../core/pgn';
+import { generateGamePGN, generateTournamentPGN, downloadTextFile, replayPGN } from '../core/pgn';
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import type { Move } from '../core/types';
@@ -149,9 +150,11 @@ export const IntransitiveStudio: React.FC = () => {
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [exportModalTab, setExportModalTab] = useState<'fen' | 'pgn'>('fen');
   const [customFenInput, setCustomFenInput] = useState<string>('');
+  const [customPgnInput, setCustomPgnInput] = useState<string>('');
   const [fenCopied, setFenCopied] = useState<boolean>(false);
   const [pgnCopied, setPgnCopied] = useState<boolean>(false);
   const [fenError, setFenError] = useState<string | null>(null);
+  const [pgnError, setPgnError] = useState<string | null>(null);
 
   // Model & Weights State
   const [weights, setWeights] = useState<EvaluationWeights>(() => createZeroWeights());
@@ -1269,19 +1272,19 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Copy active game PGN to clipboard
   const handleCopyPGN = useCallback(() => {
-    const pgn = getActiveGamePGN();
+    const pgn = exportModalTab === 'pgn' && customPgnInput ? customPgnInput : getActiveGamePGN();
     navigator.clipboard.writeText(pgn);
     setPgnCopied(true);
     setTimeout(() => setPgnCopied(false), 2000);
-  }, [getActiveGamePGN]);
+  }, [exportModalTab, customPgnInput, getActiveGamePGN]);
 
   // Export current single game PGN file
   const handleExportPGN = useCallback(() => {
-    const pgn = getActiveGamePGN();
+    const pgn = exportModalTab === 'pgn' && customPgnInput.trim() ? customPgnInput.trim() : getActiveGamePGN();
     const isPlay = activeTab === 'play';
     const tag = isPlay ? 'human_vs_ai' : 'arena_exhibition';
     downloadTextFile(`intransitive_${tag}_${Date.now()}.pgn`, pgn);
-  }, [getActiveGamePGN, activeTab]);
+  }, [exportModalTab, customPgnInput, getActiveGamePGN, activeTab]);
 
   // Copy current game FEN
   const handleCopyFEN = useCallback(() => {
@@ -1291,13 +1294,41 @@ export const IntransitiveStudio: React.FC = () => {
     setTimeout(() => setFenCopied(false), 2000);
   }, [activeGame]);
 
+  // Paste from clipboard into FEN input
+  const handlePasteFEN = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setCustomFenInput(text.trim());
+        setFenError(null);
+      }
+    } catch {
+      // Ignore if clipboard read permission is not granted
+    }
+  }, []);
+
+  // Paste from clipboard into PGN input
+  const handlePastePGN = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setCustomPgnInput(text);
+        setPgnError(null);
+      }
+    } catch {
+      // Ignore if clipboard read permission is not granted
+    }
+  }, []);
+
   // Open Export / Position Modal
   const handleOpenExportModal = useCallback((defaultTab: 'fen' | 'pgn' = 'fen') => {
     setExportModalTab(defaultTab);
     setCustomFenInput(activeGame.toFEN());
+    setCustomPgnInput(getActiveGamePGN());
     setFenError(null);
+    setPgnError(null);
     setShowExportModal(true);
-  }, [activeGame]);
+  }, [activeGame, getActiveGamePGN]);
 
   // Load custom FEN into active mode
   const handleLoadFEN = useCallback((customFen: string) => {
@@ -1349,6 +1380,64 @@ export const IntransitiveStudio: React.FC = () => {
       setShowExportModal(false);
     } catch (err: unknown) {
       setFenError((err as Error)?.message || 'Invalid Intransitive FEN string');
+    }
+  }, [activeTab, humanColor, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
+
+  // Load custom PGN into active mode
+  const handleLoadPGN = useCallback((pgnString: string) => {
+    try {
+      const result = replayPGN(pgnString);
+      if (result.error) {
+        setPgnError(result.error);
+        return;
+      }
+
+      if (analysisWorkerRef.current) {
+        analysisWorkerRef.current.terminate();
+        analysisWorkerRef.current = null;
+      }
+      setAnalysisTelemetry(null);
+
+      const lastMove = result.moves.length > 0 ? result.moves[result.moves.length - 1].move : null;
+
+      if (activeTab === 'play') {
+        setPlayGame(result.finalGame);
+        setPlaySelectedSquare(null);
+        setPlayLastMove(lastMove);
+        setPlayMoveHistory(result.moves);
+        setPlayHistoryIndex(result.moves.length - 1);
+
+        // Trigger opponent AI move if it's the AI's turn
+        const isHuman = selectedOpponentId === 'manual' ||
+                        (humanColor === 'blue' && result.finalGame.activePlayer === PLAYER_BLUE) ||
+                        (humanColor === 'red' && result.finalGame.activePlayer === PLAYER_RED);
+
+        if (!isHuman && !result.finalGame.isTerminal().isOver) {
+          if (workerRef.current) {
+            const opponentWeights = getWeightsById(selectedOpponentId);
+            const isOppNNUE = 'w0' in opponentWeights;
+            workerRef.current.postMessage({
+              type: 'STEP_LIVE',
+              currentFen: result.finalGame.toFEN(),
+              searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
+              thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
+              customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
+              customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
+            });
+          }
+        }
+      } else {
+        setArenaGame(result.finalGame);
+        setArenaSelectedSquare(null);
+        setArenaLastMove(lastMove);
+        setArenaMoveHistory(result.moves);
+        setArenaHistoryIndex(result.moves.length - 1);
+      }
+
+      setPgnError(null);
+      setShowExportModal(false);
+    } catch (err: unknown) {
+      setPgnError((err as Error)?.message || 'Failed to replay PGN notation');
     }
   }, [activeTab, humanColor, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
@@ -2281,62 +2370,44 @@ export const IntransitiveStudio: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleStartHumanGame(humanColor, selectedOpponentId)}
-                  className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
+                  className="intransitive-btn-watch-main"
+                  style={{ flex: 'unset', padding: '0.55rem 1.1rem' }}
+                  title="Start a new match with current opponent"
                 >
-                  <RotateCcw size={14} /> New Game
+                  <RotateCcw size={15} />
+                  <span>New Game</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={handleUndoHumanMove}
-                  disabled={playHistoryIndex < 0}
-                  className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                  title={isManualMode ? 'Undo previous move' : 'Undo previous human and AI move'}
-                >
-                  <Undo2 size={14} /> Undo Move
-                </button>
+                <div className="intransitive-nav-cluster">
+                  <button
+                    type="button"
+                    onClick={handleUndoHumanMove}
+                    disabled={playHistoryIndex < 0}
+                    className="intransitive-btn-round"
+                    title={isManualMode ? 'Undo previous move' : 'Undo previous human and AI move'}
+                  >
+                    <Undo2 size={16} />
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => setActiveIsBoardFlipped(!activeIsBoardFlipped)}
-                  className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                  title="Flip board view"
-                >
-                  <ArrowUpDown size={14} /> Flip Board
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveIsBoardFlipped(!activeIsBoardFlipped)}
+                    className={`intransitive-btn-round ${activeIsBoardFlipped ? 'active' : ''}`}
+                    title="Flip board view"
+                  >
+                    <ArrowUpDown size={15} />
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={handleCopyFEN}
-                  className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                  title="Copy current position FEN to clipboard"
-                >
-                  {fenCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {fenCopied ? 'Copied FEN' : 'Copy FEN'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleCopyPGN}
-                  className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                  title="Copy match moves as PGN"
-                >
-                  {pgnCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {pgnCopied ? 'Copied PGN' : 'Copy PGN'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleOpenExportModal('fen')}
-                  className="intransitive-btn-secondary"
-                  style={{ padding: '0.45rem 0.75rem', fontSize: '0.75rem' }}
-                  title="Export or import custom FEN position or PGN notation"
-                >
-                  <FileText size={14} /> FEN / PGN...
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenExportModal('fen')}
+                    className="intransitive-btn-round text-btn"
+                    title="Export or import custom FEN position or PGN notation"
+                  >
+                    <FileText size={15} />
+                    <span>FEN / PGN...</span>
+                  </button>
+                </div>
               </div>
             )}
 
@@ -2681,62 +2752,135 @@ export const IntransitiveStudio: React.FC = () => {
                   </button>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.4rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem' }}>
                   <button
                     type="button"
                     className="intransitive-btn-secondary"
-                    onClick={() => {
-                      navigator.clipboard.writeText(customFenInput.trim());
-                      setFenCopied(true);
-                      setTimeout(() => setFenCopied(false), 2000);
-                    }}
+                    onClick={handlePasteFEN}
                     style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                    title="Paste FEN from clipboard"
                   >
-                    {fenCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {fenCopied ? 'Copied FEN!' : 'Copy FEN'}
+                    <ClipboardPaste size={14} /> Paste FEN
                   </button>
 
-                  <button
-                    type="button"
-                    className="intransitive-btn-primary"
-                    onClick={() => handleLoadFEN(customFenInput)}
-                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.9rem' }}
-                  >
-                    <Check size={14} /> Load Position
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="intransitive-btn-secondary"
+                      onClick={() => {
+                        navigator.clipboard.writeText(customFenInput.trim());
+                        setFenCopied(true);
+                        setTimeout(() => setFenCopied(false), 2000);
+                      }}
+                      style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                    >
+                      {fenCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {fenCopied ? 'Copied FEN!' : 'Copy FEN'}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="intransitive-btn-primary"
+                      onClick={() => handleLoadFEN(customFenInput)}
+                      style={{ fontSize: '0.75rem', padding: '0.45rem 0.9rem' }}
+                    >
+                      <Check size={14} /> Load Position
+                    </button>
+                  </div>
                 </div>
               </>
             ) : (
               <>
                 <p style={{ fontSize: '0.74rem', color: '#6b635b', margin: 0 }}>
-                  Standard Intransitive PGN record including move notations, player labels, event metadata, and result.
+                  Standard Intransitive PGN record including move notations, player labels, event metadata, and result. You can paste external PGN notation here and load it into the board.
                 </p>
 
                 <textarea
                   className="intransitive-fen-textarea"
-                  value={getActiveGamePGN()}
-                  readOnly
+                  value={customPgnInput}
+                  onChange={(e) => {
+                    setCustomPgnInput(e.target.value);
+                    setPgnError(null);
+                  }}
+                  placeholder="Paste or type PGN moves here (e.g. 1. Pd2-d3 sd8-d7 2. Se2-e3...)"
                   rows={8}
                   style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.72rem', whiteSpace: 'pre' }}
                 />
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.4rem' }}>
-                  <button
-                    type="button"
-                    className="intransitive-btn-secondary"
-                    onClick={handleCopyPGN}
-                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
-                  >
-                    {pgnCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {pgnCopied ? 'Copied PGN!' : 'Copy PGN'}
-                  </button>
+                {pgnError && (
+                  <div className="intransitive-fen-error">
+                    {pgnError}
+                  </div>
+                )}
 
+                <div className="intransitive-fen-presets">
+                  <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#786f66' }}>Quick Actions:</span>
                   <button
                     type="button"
-                    className="intransitive-btn-primary"
-                    onClick={handleExportPGN}
-                    style={{ fontSize: '0.75rem', padding: '0.45rem 0.9rem' }}
+                    className="intransitive-fen-preset-btn"
+                    onClick={() => {
+                      setCustomPgnInput(getActiveGamePGN());
+                      setPgnError(null);
+                    }}
+                    title="Reset text to current game PGN"
                   >
-                    <Download size={14} /> Download .pgn
+                    Current Game
                   </button>
+                  <button
+                    type="button"
+                    className="intransitive-fen-preset-btn"
+                    onClick={() => {
+                      setCustomPgnInput('');
+                      setPgnError(null);
+                    }}
+                    title="Clear editor to paste fresh PGN"
+                  >
+                    Clear Text
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <div style={{ display: 'flex', gap: '0.45rem' }}>
+                    <button
+                      type="button"
+                      className="intransitive-btn-secondary"
+                      onClick={handlePastePGN}
+                      style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                      title="Paste PGN from clipboard"
+                    >
+                      <ClipboardPaste size={14} /> Paste PGN
+                    </button>
+                    <button
+                      type="button"
+                      className="intransitive-btn-secondary"
+                      onClick={handleCopyPGN}
+                      style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                      title="Copy PGN text to clipboard"
+                    >
+                      {pgnCopied ? <Check size={14} color="#059669" /> : <Copy size={14} />} {pgnCopied ? 'Copied PGN!' : 'Copy PGN'}
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="intransitive-btn-secondary"
+                      onClick={handleExportPGN}
+                      style={{ fontSize: '0.75rem', padding: '0.45rem 0.8rem' }}
+                      title="Download current PGN as file"
+                    >
+                      <Download size={14} /> Download .pgn
+                    </button>
+
+                    <button
+                      type="button"
+                      className="intransitive-btn-primary"
+                      onClick={() => handleLoadPGN(customPgnInput)}
+                      style={{ fontSize: '0.75rem', padding: '0.45rem 0.9rem' }}
+                      title="Parse, validate, and load this game onto the board"
+                    >
+                      <Play size={14} fill="currentColor" /> Load PGN
+                    </button>
+                  </div>
                 </div>
               </>
             )}

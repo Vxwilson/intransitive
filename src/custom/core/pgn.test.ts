@@ -84,4 +84,37 @@ if (!tournamentPGN.includes('[Round "1"]') || !tournamentPGN.includes('[Round "2
 }
 console.log('✓ Multi-game tournament PGN aggregation verified');
 
-console.log('\n🎉 ALL PGN SERIALIZATION TESTS PASSED WITH 100% ACCURACY!\n');
+// 4. Replay PGN Parser & Invariant Test
+console.log('\n--- 4. PGN Replay & Reconstruction ---');
+import { replayPGN } from './pgn';
+import { IntransitiveGame } from './game';
+
+const replaySim = new IntransitiveGame();
+const movesToPlay = [];
+for (let step = 0; step < 4; step++) {
+  const m = replaySim.generateLegalMoves()[0];
+  const san = replaySim.formatMoveSAN(m);
+  replaySim.makeMove(m);
+  movesToPlay.push({ san, move: m });
+}
+
+const exportedPGN = generateGamePGN({
+  white: 'Player 1 (Blue)',
+  black: 'Player 2 (Red)',
+  moves: movesToPlay,
+});
+
+const replayResult = replayPGN(exportedPGN);
+if (replayResult.error) {
+  throw new Error(`PGN replay failed: ${replayResult.error}`);
+}
+if (replayResult.moves.length !== 4) {
+  throw new Error(`Expected 4 moves replayed, got ${replayResult.moves.length}`);
+}
+if (replayResult.finalGame.toFEN() !== replaySim.toFEN()) {
+  throw new Error(`Replayed game FEN mismatch: "${replayResult.finalGame.toFEN()}" vs "${replaySim.toFEN()}"`);
+}
+console.log('✓ PGN replay successfully reconstructed game moves and exact board state');
+
+console.log('\n🎉 ALL PGN SERIALIZATION & REPLAY TESTS PASSED WITH 100% ACCURACY!\n');
+

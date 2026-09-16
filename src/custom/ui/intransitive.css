@@ -198,11 +198,15 @@ body.theme-intransitive-warm {
   grid-template-columns: 1fr;
   gap: 1.1rem;
   align-items: start;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
 }
 
 @media (min-width: 1024px) {
   .intransitive-two-col {
-    grid-template-columns: 440px 1fr;
+    grid-template-columns: 528px minmax(320px, 600px);
+    justify-content: center;
   }
 }
 
@@ -221,13 +225,14 @@ body.theme-intransitive-warm {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  max-width: 420px;
+  max-width: 504px;
   padding: 0.55rem 0.85rem;
   background: #ffffff;
   border: 1px solid #e6dfd5;
   border-radius: 12px;
   font-size: 0.76rem;
   box-shadow: 0 2px 10px rgba(50, 42, 32, 0.03);
+  box-sizing: border-box;
 }
 
 .intransitive-turn-info {
@@ -280,7 +285,8 @@ body.theme-intransitive-warm {
     0 2px 8px rgba(45, 38, 30, 0.06),
     inset 0 2px 4px rgba(255, 255, 255, 0.6);
   width: 100%;
-  max-width: 420px;
+  max-width: 504px;
+  box-sizing: border-box;
 }
 
 .intransitive-board-matrix {
@@ -352,7 +358,7 @@ body.theme-intransitive-warm {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -373,7 +379,7 @@ body.theme-intransitive-warm {
   position: absolute;
   top: 2px;
   left: 3px;
-  font-size: 8px;
+  font-size: 9px;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   color: #948b82;
@@ -384,7 +390,7 @@ body.theme-intransitive-warm {
   position: absolute;
   bottom: 2px;
   right: 3px;
-  font-size: 8px;
+  font-size: 9px;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
   color: #948b82;
@@ -461,6 +467,20 @@ body.theme-intransitive-warm {
 .intransitive-btn-round:hover {
   background: #ede6da;
   color: #241e19;
+}
+
+.intransitive-btn-round.active {
+  background: #faebe1;
+  color: #c2410c;
+  border-color: #fbd5c3;
+}
+
+.intransitive-btn-round.text-btn {
+  width: auto;
+  padding: 0 0.65rem;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 
 .intransitive-btn-round:disabled {
@@ -550,6 +570,7 @@ body.theme-intransitive-warm {
   flex-direction: column;
   gap: 1.25rem;
   width: 100%;
+  max-width: 600px;
 }
 
 .intransitive-editorial-card {
@@ -1758,11 +1779,15 @@ body.theme-intransitive-warm {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.5rem 0.8rem;
+  gap: 0.6rem;
+  width: 100%;
+  max-width: 504px;
+  padding: 0.65rem 0.85rem;
   background: #ffffff;
-  border: 1px solid #e8e2d8;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(45, 38, 30, 0.04);
+  border: 1px solid #e6dfd5;
+  border-radius: 14px;
+  box-shadow: 0 4px 18px rgba(50, 42, 32, 0.04);
+  box-sizing: border-box;
 }
 
 /* ==========================================================================
@@ -3195,6 +3220,9 @@ body.theme-intransitive-warm {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  width: 100%;
+  max-width: 504px;
+  box-sizing: border-box;
   padding: 0.35rem 0.65rem;
   background: linear-gradient(90deg, #eff6ff 0%, #fef9f3 50%, #fff7ed 100%);
   border: 1px solid #e5ddd0;
