@@ -7,6 +7,7 @@ import type { GameHistory } from '../core/game';
 import type { MatchGameLog } from '../harness/types';
 import type { SerializedNNUEWeights } from './nnue/types';
 import type { ParallelTrainingMetrics } from './parallelTraining';
+export type { ParallelTrainingMetrics } from './parallelTraining';
 
 export interface EvaluationWeights {
   pieceValues: {
@@ -259,7 +260,9 @@ export type WorkerResponse =
       type: 'TURBO_PROGRESS';
       completed: number;
       total: number;
+      /** Positions per second; retained `nps` is a legacy wire alias. */
       nps: number;
+      positionsPerSecond: number;
       stats: TrainingStats;
       weights: EvaluationWeights;
       metrics?: ParallelTrainingMetrics;

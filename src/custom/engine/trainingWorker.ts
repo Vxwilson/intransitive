@@ -45,6 +45,7 @@ let isTurboRunning = false;
 let turboCancelled = false;
 let turboPool: SelfPlayWorkerPool | null = null;
 let turboRunNumber = 0;
+let turboCancelRequestedAt: number | null = null;
 let isArenaRunning = false;
 let isArenaPaused = false;
 let arenaCancelled = false;
@@ -64,6 +65,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       if (isTurboRunning) return;
       isTurboRunning = true;
       turboCancelled = false;
+      turboCancelRequestedAt = null;
 
       const totalGames = Math.max(0, Math.floor(req.totalGames));
       const workerCount = Math.max(1, Math.floor(req.workerCount ?? 1));
@@ -88,8 +90,11 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       trainer.leagueBuffer = previousLeagueBuffer;
 
       let pool: SelfPlayWorkerPool;
+      let poolStartupWallMs = 0;
       try {
+        const poolStartedAt = performance.now();
         pool = createBrowserSelfPlayPool(workerCount);
+        poolStartupWallMs = performance.now() - poolStartedAt;
         turboPool = pool;
       } catch (error) {
         isTurboRunning = false;
@@ -106,16 +111,21 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
       const reportProgress = (progress: ParallelTrainingProgress) => {
         const elapsedSec = Math.max(0.001, progress.metrics.elapsedWallMs / 1000);
-        const nps = Math.round(progress.metrics.positions / elapsedSec);
+        const positionsPerSecond = Math.round(progress.metrics.positions / elapsedSec);
         currentParallelTrainingState = trainer.getParallelTrainingState(progress.metrics.nextBatchId);
         post({
           type: 'TURBO_PROGRESS',
           completed: progress.completed,
           total: progress.total,
-          nps,
+          nps: positionsPerSecond,
+          positionsPerSecond,
           stats: progress.stats,
           weights: progress.weights,
-          metrics: progress.metrics,
+          metrics: {
+            ...progress.metrics,
+            startupWallMs: poolStartupWallMs,
+            cancellationLatencyMs: null,
+          },
           workerCount,
           batchGames,
           trainingState: currentParallelTrainingState,
@@ -131,11 +141,18 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         onProgress: reportProgress,
       }).then((run) => {
         currentParallelTrainingState = trainer.getParallelTrainingState(run.metrics.nextBatchId);
+        const cancellationLatencyMs = turboCancelRequestedAt === null
+          ? null
+          : Math.max(0, performance.now() - turboCancelRequestedAt);
         post({
           type: 'TURBO_COMPLETE',
           stats: trainer.stats,
           weights: trainer.weights,
-          metrics: run.metrics,
+          metrics: {
+            ...run.metrics,
+            startupWallMs: poolStartupWallMs,
+            cancellationLatencyMs,
+          },
           workerCount,
           batchGames,
           isCancelled: run.metrics.cancelled,
@@ -160,6 +177,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     case 'STOP_TURBO': {
+      if (isTurboRunning && turboCancelRequestedAt === null) {
+        turboCancelRequestedAt = performance.now();
+      }
       turboCancelled = true;
       break;
     }

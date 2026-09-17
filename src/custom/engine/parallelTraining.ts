@@ -27,6 +27,12 @@ export interface ParallelTrainingMetrics {
   searchNodes: number;
   workerTimeMs: number;
   searchTimeMs: number;
+  /** Wall time spent waiting for workers to produce the current batches. */
+  generationWallMs: number;
+  /** Time spent applying terminal TD updates in the coordinator. */
+  updateTimeMs: number;
+  /** Residual batch time after worker execution; includes transport/scheduling. */
+  coordinationOverheadMs: number;
   elapsedWallMs: number;
   workerCount: number;
   batchGames: number;
@@ -34,6 +40,9 @@ export interface ParallelTrainingMetrics {
   batchesCompleted: number;
   nextBatchId: number;
   cancelled: boolean;
+  /** Runtime adapter metadata; browser workers populate these when available. */
+  startupWallMs?: number;
+  cancellationLatencyMs?: number | null;
 }
 
 export interface ParallelTrainingProgress {
@@ -80,6 +89,9 @@ function emptyMetrics(options: ParallelTrainingOptions): ParallelTrainingMetrics
     searchNodes: 0,
     workerTimeMs: 0,
     searchTimeMs: 0,
+    generationWallMs: 0,
+    updateTimeMs: 0,
+    coordinationOverheadMs: 0,
     elapsedWallMs: 0,
     workerCount: options.workerCount,
     batchGames: options.batchGames,
@@ -194,6 +206,7 @@ export async function runParallelSelfPlayTraining(
     metrics.jobsDispatched += jobs.length;
 
     let results: SelfPlayGameResult[];
+    const generationStartedAt = performance.now();
     try {
       results = await pool.generateBatch(jobs, shouldCancel);
     } catch (error) {
@@ -211,8 +224,16 @@ export async function runParallelSelfPlayTraining(
       metrics.cancelled = true;
       break;
     }
+    const generationWallMs = performance.now() - generationStartedAt;
+    metrics.generationWallMs += generationWallMs;
+    const longestWorkerMs = results.reduce(
+      (longest, result) => Math.max(longest, result.telemetry.totalTimeMs),
+      0
+    );
+    metrics.coordinationOverheadMs += Math.max(0, generationWallMs - longestWorkerMs);
 
     const orderedResults = validateBatch(jobs, results, trainer);
+    const updateStartedAt = performance.now();
     for (const result of orderedResults) {
       const record = trainer.applySelfPlayGameResult(result);
       records.push(record);
@@ -225,6 +246,7 @@ export async function runParallelSelfPlayTraining(
       metrics.workerTimeMs += result.telemetry.totalTimeMs;
       metrics.searchTimeMs += result.telemetry.searchTimeMs;
     }
+    metrics.updateTimeMs += performance.now() - updateStartedAt;
     metrics.batchesCompleted++;
     metrics.nextBatchId = batchId + 1;
     metrics.elapsedWallMs = performance.now() - startedAt;

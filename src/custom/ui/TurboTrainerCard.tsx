@@ -17,11 +17,17 @@ import {
   BrainCircuit,
   ChevronDown,
 } from 'lucide-react';
-import type { TrainingStats } from '../engine/types';
+import type { ParallelTrainingMetrics, TrainingStats } from '../engine/types';
 
 interface TurboTrainerCardProps {
   isTraining: boolean;
-  progress: { completed: number; total: number; nps: number } | null;
+  progress: {
+    completed: number;
+    total: number;
+    nps: number;
+    positionsPerSecond: number;
+    metrics?: ParallelTrainingMetrics;
+  } | null;
   stats: TrainingStats;
   onStartTurbo: (games: number) => void;
   onStopTurbo: () => void;
@@ -66,6 +72,9 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
 
   const activeIsTraining = trainerArchitecture === 'nnue' ? isNNUETraining : isTraining;
   const activeProgress = trainerArchitecture === 'nnue' ? nnueProgress : progress;
+  const activeSpeed = trainerArchitecture === 'linear'
+    ? progress?.positionsPerSecond ?? 0
+    : nnueProgress?.nps ?? 0;
 
   const percent = activeProgress && activeProgress.total > 0
     ? Math.min(100, Math.round((activeProgress.completed / activeProgress.total) * 100))
@@ -160,7 +169,16 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.74rem', color: '#786f66', paddingTop: '0.3rem' }}>
             <span>
-              Worker Speed: <strong style={{ color: '#241e19', fontFamily: "'JetBrains Mono', monospace" }}>{activeProgress.nps.toLocaleString()}</strong> plies/sec
+              {trainerArchitecture === 'linear' ? 'Position Speed' : 'Worker Speed'}:{' '}
+              <strong style={{ color: '#241e19', fontFamily: "'JetBrains Mono', monospace" }}>{activeSpeed.toLocaleString()}</strong>{' '}
+              {trainerArchitecture === 'linear' ? 'positions/sec' : 'plies/sec'}
+              {trainerArchitecture === 'linear' && progress?.metrics && (
+                <span style={{ marginLeft: '0.6rem', color: '#786f66' }}>
+                  | Games: <strong>{(progress.metrics.gamesGenerated * 1000 / Math.max(1, progress.metrics.elapsedWallMs)).toFixed(1)}/sec</strong>
+                  {' '}| Nodes: <strong>{Math.round(progress.metrics.searchNodes * 1000 / Math.max(1, progress.metrics.elapsedWallMs)).toLocaleString()}/sec</strong>
+                  {' '}| Update: <strong>{progress.metrics.updateTimeMs.toFixed(0)}ms</strong>
+                </span>
+              )}
               {trainerArchitecture === 'nnue' && nnueProgress && (
                 <span style={{ marginLeft: '0.6rem', color: '#c2410c' }}>
                   | Loss: <strong>{nnueProgress.loss.toFixed(4)}</strong> | Buffer: <strong>{nnueProgress.bufferSize.toLocaleString()}</strong>
@@ -209,19 +227,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
 
       {/* Self-Play Training Depth Selector Row */}
       {!isTraining && onChangeTrainingSearchDepth && (
-        <div
-          style={{
-            marginTop: '0.65rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0.42rem 0.75rem',
-            background: '#faf8f5',
-            borderRadius: '8px',
-            border: '1px solid #eee8de',
-            fontSize: '0.74rem',
-          }}
-        >
+        <div className="intransitive-training-depth-bar">
           <div>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 700, color: '#4a4239' }}>
               <BrainCircuit size={14} color="#7c3aed" /> Self-Play Training Depth:
@@ -260,23 +266,10 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
       )}
 
       {!activeIsTraining && trainerArchitecture === 'linear' && onChangeTrainingWorkerCount && onChangeTrainingBatchGames && (
-        <div
-          style={{
-            marginTop: '0.5rem',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '0.75rem',
-            padding: '0.42rem 0.75rem',
-            background: '#faf8f5',
-            borderRadius: '8px',
-            border: '1px solid #eee8de',
-            fontSize: '0.74rem',
-          }}
-        >
-          <span style={{ fontWeight: 700, color: '#4a4239' }}>Parallel generation:</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <label style={{ color: '#786f66' }}>
+        <div className="intransitive-parallel-bar">
+          <span className="intransitive-parallel-label">Parallel generation:</span>
+          <div className="intransitive-parallel-controls">
+            <label className="intransitive-parallel-field">
               Workers{' '}
               <select
                 value={trainingWorkerCount}
@@ -287,7 +280,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
                 {[1, 2, 4, 8].map((count) => <option key={count} value={count}>{count}</option>)}
               </select>
             </label>
-            <label style={{ color: '#786f66' }}>
+            <label className="intransitive-parallel-field">
               Batch{' '}
               <select
                 value={trainingBatchGames}
@@ -299,7 +292,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
               </select>
             </label>
           </div>
-          <span style={{ color: '#786f66', fontSize: '0.69rem' }}>
+          <span className="intransitive-parallel-note">
             Frozen-policy batches update in game-ID order.
           </span>
         </div>

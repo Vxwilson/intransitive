@@ -37,6 +37,7 @@ import type {
   Checkpoint,
   WorkerResponse,
   AnalysisTelemetry,
+  ParallelTrainingMetrics,
   ParallelTrainingState,
 } from '../engine/types';
 import type { NNUEWeights } from '../engine/nnue/types';
@@ -217,7 +218,13 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Turbo Worker State
   const [isTurboTraining, setIsTurboTraining] = useState<boolean>(false);
-  const [turboProgress, setTurboProgress] = useState<{ completed: number; total: number; nps: number } | null>(null);
+  const [turboProgress, setTurboProgress] = useState<{
+    completed: number;
+    total: number;
+    nps: number;
+    positionsPerSecond: number;
+    metrics?: ParallelTrainingMetrics;
+  } | null>(null);
 
   // NNUE Architecture State
   const [trainerArchitecture, setTrainerArchitecture] = useState<'linear' | 'nnue'>('linear');
@@ -747,6 +754,8 @@ export const IntransitiveStudio: React.FC = () => {
             completed: data.completed,
             total: data.total,
             nps: data.nps,
+            positionsPerSecond: data.positionsPerSecond,
+            metrics: data.metrics,
           });
           setStats(data.stats);
           setWeights(data.weights);

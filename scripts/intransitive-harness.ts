@@ -1,11 +1,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { cpus } from 'node:os';
 import { getStoredCheckpoints } from '../src/custom/engine/checkpoint.ts';
 import { cloneWeights, createHeuristicWeights } from '../src/custom/engine/evaluator.ts';
 import { SelfPlayTrainer } from '../src/custom/engine/trainer.ts';
 import type { GameRecord } from '../src/custom/engine/trainer.ts';
 import { createNodeSelfPlayPool } from './nodeSelfPlayPool.ts';
 import { runParallelSelfPlayTraining } from '../src/custom/engine/parallelTraining.ts';
+import {
+  runTrainingBenchmark,
+  type TrainingBenchmarkConfiguration,
+} from '../src/custom/engine/trainingBenchmark.ts';
 import { deserializeWeights } from '../src/custom/engine/nnue/featureTransformer.ts';
 import { INTRANSITIVE_FIXTURES } from '../src/custom/harness/fixtures.ts';
 import {
@@ -22,12 +27,14 @@ import type {
 import type { Checkpoint, TrainingRunMetadata } from '../src/custom/engine/types.ts';
 
 const DEFAULT_REPORT_DIR = 'reports';
+const BOOLEAN_FLAGS = new Set(['no-annealing', 'no-cancel-probe']);
 
 function usage(): never {
   console.error(`Usage:
   npm run intransitive:benchmark -- [options]
   npm run intransitive:match -- [options]
   npm run intransitive:train -- [options]
+  npm run intransitive:training-benchmark -- [options]
 
 Benchmark options:
   --model master|heuristic|zero|<checkpoint-id>  (default: master)
@@ -61,7 +68,17 @@ Training options:
   --workers N --batch-games N                     (defaults: 1, 1; batch mode is opt-in)
   --run-id ID                                     stable parallel-run identity (optional)
   --no-annealing                                  disable learning-rate annealing
-  --output path --log path                        new checkpoint and optional JSONL log`);
+  --output path --log path                        new checkpoint and optional JSONL log
+
+Training benchmark options:
+  --start master|heuristic|zero|<checkpoint-id>|path.json (default: master)
+  --opponent heuristic|<checkpoint-id>             (default: heuristic)
+  --games N --runs N --warmup-games N              (defaults: 40, 3, 4)
+  --depths N[,N...]                                 (default: 1,2)
+  --max-plies N --learning-rate N --lambda N --epsilon N
+  --workers N[,N...] --batch-games N               (defaults: 1,2,4 and 4)
+  --seed N --output path                            (optional JSON report)
+  --no-cancel-probe                                skip worker cancellation probes`);
   process.exit(2);
 }
 
@@ -72,7 +89,13 @@ function parseArgs(args: string[]): Map<string, string> {
     if (!token.startsWith('--')) usage();
     const name = token.slice(2);
     const value = args[i + 1];
-    if (!value || value.startsWith('--')) usage();
+    if (!value || value.startsWith('--')) {
+      if (BOOLEAN_FLAGS.has(name)) {
+        parsed.set(name, 'true');
+        continue;
+      }
+      usage();
+    }
     parsed.set(name, value);
     i++;
   }
@@ -393,6 +416,123 @@ async function runTrainingCommand(args: Map<string, string>): Promise<void> {
   }, null, 2));
 }
 
+function integerListArg(args: Map<string, string>, name: string, fallback: string): number[] {
+  const raw = args.get(name) ?? fallback;
+  const values = raw.split(',').map((value) => Number(value.trim()));
+  if (values.length === 0 || values.some((value) => !Number.isInteger(value) || value < 1)) {
+    console.error(`--${name} must be a comma-separated list of positive integers.`);
+    process.exit(2);
+  }
+  return [...new Set(values)];
+}
+
+async function runTrainingBenchmarkCommand(args: Map<string, string>): Promise<void> {
+  const startIdentifier = args.get('start') ?? 'master';
+  const opponentIdentifier = args.get('opponent') ?? 'heuristic';
+  const startCheckpoint = findCheckpoint(startIdentifier);
+  const opponentCheckpoint = opponentIdentifier.toLowerCase() === 'heuristic'
+    ? findCheckpoint('heuristic')
+    : findCheckpoint(opponentIdentifier);
+  const startWeights = linearWeights(startCheckpoint, 'Start');
+  const opponentWeights = opponentIdentifier.toLowerCase() === 'heuristic'
+    ? createHeuristicWeights()
+    : linearWeights(opponentCheckpoint, 'Opponent');
+
+  const requestedGames = Math.max(1, Math.floor(trainingNumber(args, 'games', 40)));
+  const repetitions = Math.max(1, Math.floor(trainingNumber(args, 'runs', 3)));
+  const warmupGames = Math.max(0, Math.floor(trainingNumber(args, 'warmup-games', 4)));
+  const maxPlies = Math.max(1, Math.floor(trainingNumber(args, 'max-plies', 80)));
+  const seed = Math.floor(trainingNumber(args, 'seed', 1));
+  const depths = integerListArg(
+    args,
+    'depths',
+    args.has('search-depth') ? String(Math.floor(trainingNumber(args, 'search-depth', 1))) : '1,2'
+  );
+  const workerCounts = integerListArg(args, 'workers', '1,2,4');
+  const batchGames = Math.max(1, Math.floor(trainingNumber(args, 'batch-games', 4)));
+  const learningRate = Math.max(0, trainingNumber(args, 'learning-rate', 0.015));
+  const lambda = Math.max(0, Math.min(1, trainingNumber(args, 'lambda', 0.7)));
+  const epsilon = Math.max(0, Math.min(1, trainingNumber(args, 'epsilon', 0.10)));
+  const trainingConfig = {
+    learningRate,
+    lambda,
+    epsilon,
+    maxPliesPerGame: maxPlies,
+    learningRateAnnealing: !args.has('no-annealing'),
+  };
+  const configurations: TrainingBenchmarkConfiguration[] = [
+    { mode: 'serial-online', workerCount: 0, batchGames: 1 },
+    ...workerCounts.map((workerCount) => ({
+      mode: 'frozen-batch' as const,
+      workerCount,
+      batchGames,
+    })),
+  ];
+  const cpuOrigin = process.cpuUsage();
+  const readCpuTimeMs = () => {
+    const usage = process.cpuUsage(cpuOrigin);
+    return (usage.user + usage.system) / 1000;
+  };
+  const readMemoryBytes = () => process.memoryUsage().rss;
+  const reports = [];
+
+  for (const searchDepth of depths) {
+    const report = await runTrainingBenchmark({
+      seed,
+      searchDepth,
+      maxPlies,
+      requestedGames,
+      repetitions,
+      warmupGames,
+      configurations,
+      createPool: createNodeSelfPlayPool,
+      readCpuTimeMs,
+      readMemoryBytes,
+      measureCancellation: !args.has('no-cancel-probe'),
+      createTrainer: (context) => new SelfPlayTrainer(
+        cloneWeights(startWeights),
+        { ...trainingConfig, searchDepth },
+        {
+          runId: `cli-benchmark-d${searchDepth}-${context.mode}-w${context.workerCount}-b${context.batchGames}-r${context.repetition}-${context.phase}`,
+          runSeed: seed,
+          learnerColorPolicy: 'alternate',
+          opponentPolicy: 'fixed',
+          opponentWeights: cloneWeights(opponentWeights),
+          opponentId: opponentCheckpoint.id,
+          initialStats: JSON.parse(JSON.stringify(startCheckpoint.stats)),
+        }
+      ),
+      engineVersion: 'package-4-training-benchmark-v1',
+    });
+    reports.push({
+      ...report,
+      startCheckpointId: startCheckpoint.id,
+      startCheckpointName: startCheckpoint.name,
+      opponentCheckpointId: opponentCheckpoint.id,
+      opponentCheckpointName: opponentCheckpoint.name,
+    });
+  }
+
+  const payload = {
+    kind: 'intransitive-training-benchmark-suite',
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    runtime: {
+      name: 'node',
+      version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      logicalCpus: cpus().length,
+    },
+    reports,
+  };
+  const outputPath = ensureOutputParent(
+    args.get('output') ?? `${DEFAULT_REPORT_DIR}/intransitive-training-benchmark.json`
+  );
+  writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\n`);
+  console.log(JSON.stringify({ output: outputPath, ...payload }, null, 2));
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (!command) usage();
@@ -400,6 +540,7 @@ async function main(): Promise<void> {
   if (command === 'benchmark') runBenchmarkCommand(args);
   else if (command === 'match') runMatchCommand(args);
   else if (command === 'train') await runTrainingCommand(args);
+  else if (command === 'training-benchmark') await runTrainingBenchmarkCommand(args);
   else usage();
 }
 

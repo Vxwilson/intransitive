@@ -1804,6 +1804,99 @@ body.theme-intransitive-warm {
   width: 100%;
 }
 
+/* Compact experiment controls: the three-column layout keeps the benchmark
+   label, controls, and frozen-policy explanation visually balanced on wide
+   screens while allowing them to stack cleanly on narrow screens. */
+.intransitive-training-depth-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+  padding: 0.42rem 0.75rem;
+  background: #faf8f5;
+  border: 1px solid #eee8de;
+  border-radius: 8px;
+  font-size: 0.74rem;
+}
+
+.intransitive-parallel-bar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(270px, 1.4fr);
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.9rem;
+  background: #faf9f6;
+  border: 1px solid #ebe5dc;
+  border-radius: 12px;
+  color: #786f66;
+  font-size: 0.76rem;
+  box-shadow: 0 2px 8px rgba(50, 42, 32, 0.025);
+}
+
+.intransitive-parallel-label {
+  color: #4a4239;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.intransitive-parallel-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  white-space: nowrap;
+}
+
+.intransitive-parallel-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #786f66;
+  font-weight: 500;
+}
+
+.intransitive-parallel-bar .intransitive-select {
+  min-width: 3.1rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #514d48;
+  border-radius: 5px;
+  background: #403e3b;
+  color: #ffffff;
+  color-scheme: dark;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.intransitive-parallel-bar .intransitive-select:focus-visible {
+  outline: 2px solid #c2410c;
+  outline-offset: 1px;
+}
+
+.intransitive-parallel-note {
+  color: #786f66;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+@media (max-width: 760px) {
+  .intransitive-parallel-bar {
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+  }
+
+  .intransitive-parallel-controls {
+    justify-content: flex-start;
+  }
+
+  .intransitive-parallel-note {
+    text-align: left;
+  }
+}
+
 .intransitive-custom-train-bar {
   display: flex;
   align-items: center;
@@ -3459,4 +3552,3 @@ body.theme-intransitive-warm {
   border-color: #d1c4b2;
   color: #2b2520;
 }
-
