@@ -1793,3 +1793,71 @@ body {
     width: min(70vh, 600px);
   }
 }
+
+/* Keep the global shell usable on narrow phone viewports. The desktop header
+   remains unchanged; only the mobile layout gets a contained, scrollable mode
+   switcher so it cannot widen the document. */
+@media (max-width: 760px) {
+  .app-root,
+  .app-header,
+  .app-container {
+    min-width: 0;
+  }
+
+  .app-root {
+    width: 100%;
+    overflow-x: clip;
+  }
+
+  .app-header {
+    height: auto;
+    min-height: 60px;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    padding: 0.6rem 0.75rem;
+  }
+
+  .brand-group {
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 0.5rem;
+  }
+
+  .brand-phase-tag {
+    display: none;
+  }
+
+  .brand-title {
+    font-size: 1.05rem;
+  }
+
+  .top-mode-switcher {
+    order: 3;
+    flex: 0 0 100%;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    justify-content: flex-start;
+    scrollbar-width: none;
+  }
+
+  .top-mode-switcher::-webkit-scrollbar {
+    display: none;
+  }
+
+  .top-mode-btn {
+    flex: 0 0 auto;
+    padding: 0.4rem 0.65rem;
+    font-size: 0.7rem;
+  }
+
+  .header-status {
+    min-width: 0;
+    font-size: 0.75rem;
+  }
+
+  .app-container {
+    padding: 0.75rem;
+    gap: 0.75rem;
+  }
+}

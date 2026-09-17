@@ -1903,7 +1903,10 @@ export const IntransitiveStudio: React.FC = () => {
         </div>
 
         {/* Tab List & Contextual Controls in Same Row */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        <div
+          className="intransitive-header-nav-row"
+          style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}
+        >
           <div className="intransitive-tab-list">
             <button
               type="button"
@@ -1913,7 +1916,9 @@ export const IntransitiveStudio: React.FC = () => {
               }}
               className={`intransitive-tab-button ${activeTab === 'play' ? 'active' : ''}`}
             >
-              <Gamepad2 size={14} color="#059669" /> Human Play
+              <Gamepad2 size={14} color="#059669" />
+              <span className="intransitive-tab-label-full">Human Play</span>
+              <span className="intransitive-tab-label-mobile">Play</span>
             </button>
 
             <button
@@ -1924,7 +1929,9 @@ export const IntransitiveStudio: React.FC = () => {
               }}
               className={`intransitive-tab-button ${activeTab === 'arena' ? 'active' : ''}`}
             >
-              <Swords size={14} color="#7c3aed" /> Visual Arena
+              <Swords size={14} color="#7c3aed" />
+              <span className="intransitive-tab-label-full">Visual Arena</span>
+              <span className="intransitive-tab-label-mobile">Arena</span>
             </button>
 
             <button
@@ -1935,7 +1942,9 @@ export const IntransitiveStudio: React.FC = () => {
               }}
               className={`intransitive-tab-button ${activeTab === 'turbo' ? 'active' : ''}`}
             >
-              <Zap size={14} color="#ea580c" /> Turbo Trainer
+              <Zap size={14} color="#ea580c" />
+              <span className="intransitive-tab-label-full">Turbo Trainer</span>
+              <span className="intransitive-tab-label-mobile">Train</span>
             </button>
 
             <button
@@ -1946,7 +1955,9 @@ export const IntransitiveStudio: React.FC = () => {
               }}
               className={`intransitive-tab-button ${activeTab === 'settings' ? 'active' : ''}`}
             >
-              <SettingsIcon size={14} color="#4f46e5" /> Settings
+              <SettingsIcon size={14} color="#4f46e5" />
+              <span className="intransitive-tab-label-full">Settings</span>
+              <span className="intransitive-tab-label-mobile">Settings</span>
             </button>
 
             <button
