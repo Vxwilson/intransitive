@@ -1,0 +1,18 @@
+{
+  "kind": "intransitive-paired-match-report",
+  "schemaVersion": 1,
+  "engineVersion": "package-2-search-v1",
+  "seed": 20260917,
+  "pairCount": 1,
+  "gamesPlayed": 2,
+  "resolvedGames": 2,
+  "winsA": 0,
+  "winsB": 0,
+  "draws": 2,
+  "truncations": 0,
+  "errors": 0,
+  "scoreA": 1,
+  "scoreAPerResolvedGame": 0.5,
+  "averagePlies": 25,
+  "capHitRate": 0
+}

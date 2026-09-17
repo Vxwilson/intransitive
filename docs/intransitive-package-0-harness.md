@@ -38,9 +38,9 @@ npm run intransitive:match -- \
   --report reports/package-0-match.json
 ```
 
-For a true random legal-move baseline, use `--a random` or `--b random`. It samples uniformly from the current legal move list and does not call the evaluator or search. Node-limited runs use `--engine reference`, because the legacy production search API does not have an interruptible node-budget interface yet.
+For a true random legal-move baseline, use `--a random` or `--b random`. It samples uniformly from the current legal move list and does not call the evaluator or search. The corrected production search supports node budgets; use `--root greedy` for optimized best-move searches or `--root full` for exact full-window root comparisons.
 
-The reference engine checks node/time budgets during recursion. The `production` wall-time adapter is a legacy baseline: it checks time between completed depths, so its elapsed time can overshoot a small budget. Package 1 owns hard-deadline search and worker cancellation; Package 0 records the behavior rather than presenting it as corrected.
+The reference engine checks node/time budgets during recursion. The optimized production path uses the shared Package 1 hard-deadline/node-budget entry point. An explicit full-window MultiPV wall-time benchmark remains a diagnostic adapter that checks time between completed depths and can overshoot a small budget.
 
 ## Checked-in inputs and outputs
 

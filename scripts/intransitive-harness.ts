@@ -26,6 +26,7 @@ Benchmark options:
   --engine production|reference|both             (default: production)
   --depth N | --nodes N | --time-ms N            (default: --depth 2)
   --max-depth N                                  (time/node safety ceiling)
+  --root greedy|full                             (production root policy, default: greedy)
   --fixtures id1,id2                             (default: all checked-in fixtures)
   --warmup N --runs N                            (defaults: 1 and 5)
   --output path                                   (optional JSON report)
@@ -40,8 +41,8 @@ Match options:
   --engine production|reference                  (default: production)
   --seed N --jsonl path --report path             (optional output paths)
 
-Node-limited runs use the test-only reference engine because the legacy
-production API has no interruptible node-budget contract yet.`);
+Production search supports depth, node, and wall-time limits. The reference
+engine remains a correctness oracle, not a strength claim.`);
   process.exit(2);
 }
 
@@ -135,8 +136,9 @@ function runBenchmarkCommand(args: Map<string, string>): void {
     : requestedEngine === 'production' || requestedEngine === 'reference'
       ? [requestedEngine]
       : (console.error(`Unknown engine: ${requestedEngine}`), process.exit(2), []);
-  if (limit.kind === 'nodes' && engines.includes('production')) {
-    console.error('Node-limited production benchmarks are unsupported; use --engine reference or --engine both without --nodes.');
+  const rootMode = args.get('root') ?? 'greedy';
+  if (rootMode !== 'greedy' && rootMode !== 'full') {
+    console.error(`Unknown --root mode: ${rootMode}`);
     process.exit(2);
   }
 
@@ -157,6 +159,7 @@ function runBenchmarkCommand(args: Map<string, string>): void {
     maxDepth: numberArg(args, 'max-depth', 4),
     warmupRuns: numberArg(args, 'warmup', 1),
     measuredRuns: numberArg(args, 'runs', 5),
+    rootMode: rootMode as 'greedy' | 'full',
   }));
   const payload = reports.length === 1 ? reports[0] : { reports };
   const output = args.get('output');
@@ -171,10 +174,6 @@ function runMatchCommand(args: Map<string, string>): void {
     process.exit(2);
   }
   const limit = searchLimit(args, 1);
-  if (limit.kind === 'nodes' && engine === 'production') {
-    console.error('Node-limited production matches are unsupported; use --engine reference.');
-    process.exit(2);
-  }
   const agentA = checkpointAgent(args.get('a') ?? 'master', engine, limit, numberArg(args, 'max-depth', 4));
   const agentB = checkpointAgent(args.get('b') ?? 'heuristic', engine, limit, numberArg(args, 'max-depth', 4));
   const report = runPairedMatch({

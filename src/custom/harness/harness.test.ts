@@ -150,7 +150,7 @@ assert(redToMove.activePlayer !== PLAYER_BLUE, 'fixture coverage includes Red-to
 const productionBefore = snapshotGame(redToMove);
 searchPosition(redToMove, createHeuristicWeights(), { engine: 'production', limit: { kind: 'depth', value: 1 }, count: 1 });
 assert(snapshotGame(redToMove) === productionBefore, 'production benchmark adapter must restore state');
-console.log('✓ Production adapter clears per-run TT state and restores the fixture position');
+console.log('✓ Production adapter owns per-run search state and restores the fixture position');
 
 const contaminationGame = loadFixture(INTRANSITIVE_FIXTURES.find((fixture) => fixture.id === 'start')!);
 const isolatedZero = searchPosition(contaminationGame, createZeroWeights(), {

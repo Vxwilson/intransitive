@@ -1,5 +1,4 @@
-import { globalIntransitiveTT } from '../engine/transposition';
-import { getTopMoves } from '../engine/search';
+import { createSearchContext, getTopMoves, selectMove } from '../engine/search';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import type { Move } from '../core/types';
 import { IntransitiveGame } from '../core/game';
@@ -22,7 +21,7 @@ import type {
   SearchRequest,
 } from './types';
 
-export const HARNESS_ENGINE_VERSION = 'package-0-harness-v1';
+export const HARNESS_ENGINE_VERSION = 'package-2-search-v1';
 const INITIAL_FEN = '9/4pr3/4spr2/5spr1/1PS3sp1/1RPS5/2RPS4/3RP4/9 b 0 1';
 
 export function createSeededRng(seed: number): () => number {
@@ -75,17 +74,53 @@ function productionSearch(
   weights: HarnessWeights,
   request: SearchRequest
 ): HarnessSearchResult {
-  if (request.limit.kind === 'nodes') {
-    throw new Error('The legacy production adapter does not expose a node budget; use --engine reference for node-limited runs.');
+  const useGreedyRoot = request.rootMode !== 'full' && (request.count ?? 1) <= 1;
+  if (useGreedyRoot) {
+    const searchLimit = request.limit.kind === 'depth'
+      ? { kind: 'depth' as const, depth: request.limit.value }
+      : request.limit.kind === 'nodes'
+        ? { kind: 'nodes' as const, nodes: request.limit.value }
+        : { kind: 'time' as const, timeMs: request.limit.valueMs };
+    const result = selectMove(game, weights, {
+      limit: searchLimit,
+      maxDepth: request.maxDepth,
+      temperature: 0,
+      rootNoise: 0,
+      openingPlies: 0,
+    });
+    const best = result.bestMove;
+    return {
+      bestMove: best,
+      score: result.score,
+      completedDepth: result.completedDepth,
+      nodes: result.nodes,
+      elapsedMs: roundMetric(result.elapsedMs),
+      stopReason: result.stopReason === 'aborted' ? 'fallback' : result.stopReason,
+      scoreKind: result.scoreKind === 'bound' ? 'partial' : result.scoreKind,
+      candidates: best
+        ? [{
+            move: best,
+            rank: 1,
+            score: result.score,
+            san: game.formatMoveSAN(best),
+            pv: result.pv.slice(1).map((move) => game.formatMoveSAN(move)),
+          }]
+        : [],
+    };
   }
 
-  globalIntransitiveTT.clear();
+  // Full-window root scoring is retained for MultiPV and explicit
+  // corrected-vs-optimized benchmark comparisons. Fixed-depth runs are exact;
+  // this path remains deliberately simple and does not feed bounds to policy.
+  if (request.limit.kind === 'nodes') {
+    throw new Error('Full-window MultiPV harness searches require a fixed depth or time limit.');
+  }
   const startedAt = performance.now();
   const maxDepth = Math.max(1, Math.floor(request.maxDepth ?? (request.limit.kind === 'depth' ? request.limit.value : 6)));
   const depthLimit = request.limit.kind === 'depth'
     ? Math.max(1, Math.floor(request.limit.value))
     : maxDepth;
-  const context = { nodes: 0 };
+  const context = createSearchContext();
   let lastCandidates = getTopMoves(game, weights, request.count ?? 1, 1, context);
   let completedDepth = 1;
   let stopReason: HarnessSearchResult['stopReason'] = request.limit.kind === 'depth' ? 'depth' : 'time-budget';
@@ -93,7 +128,7 @@ function productionSearch(
   if (request.limit.kind === 'depth') {
     lastCandidates = getTopMoves(game, weights, request.count ?? 1, depthLimit, context);
     completedDepth = depthLimit;
-  } else {
+  } else if (request.limit.kind === 'time') {
     for (let depth = 2; depth <= depthLimit; depth++) {
       if (performance.now() - startedAt >= request.limit.valueMs) break;
       const candidates = getTopMoves(game, weights, request.count ?? 1, depth, context);
@@ -106,6 +141,8 @@ function productionSearch(
     if (completedDepth >= depthLimit && performance.now() - startedAt < request.limit.valueMs) {
       stopReason = 'depth';
     }
+  } else {
+    throw new Error('Full-window MultiPV harness searches require a fixed depth or time limit.');
   }
 
   const elapsedMs = performance.now() - startedAt;
@@ -130,7 +167,7 @@ function productionSearch(
     nodes: context.nodes,
     elapsedMs: roundMetric(elapsedMs),
     stopReason,
-    scoreKind: 'engine',
+    scoreKind: request.limit.kind === 'depth' || stopReason === 'depth' ? 'exact' : 'partial',
     candidates: lastCandidates,
   };
 }
@@ -178,6 +215,7 @@ export interface BenchmarkOptions {
   warmupRuns?: number;
   measuredRuns?: number;
   maxDepth?: number;
+  rootMode?: 'greedy' | 'full';
 }
 
 export function runSearchBenchmark(options: BenchmarkOptions): BenchmarkReport {
@@ -193,6 +231,7 @@ export function runSearchBenchmark(options: BenchmarkOptions): BenchmarkReport {
         limit: options.limit,
         maxDepth: options.maxDepth,
         count: 1,
+        rootMode: options.rootMode,
       });
       if (run < warmupRuns) continue;
 
@@ -236,6 +275,9 @@ export function runSearchBenchmark(options: BenchmarkOptions): BenchmarkReport {
     engineVersion: HARNESS_ENGINE_VERSION,
     modelId: options.modelId,
     limit: limitValue(options.limit),
+    ...(options.engine === 'production'
+      ? { rootMode: options.rootMode ?? 'greedy' as const }
+      : {}),
     warmupRuns,
     measuredRuns,
     fixtures: summaries,

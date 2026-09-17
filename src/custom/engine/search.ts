@@ -50,6 +50,8 @@ export interface SearchContext {
   shouldStop?: () => boolean;
   /** Move-ordering table owned by this root-search session. */
   tt: IntransitiveTT;
+  /** Best root move from the last fully completed depth. */
+  rootMoveHint?: Move | null;
 }
 
 export type SearchContextInput = SearchContext | { nodes: number };
@@ -59,6 +61,7 @@ export interface SearchContextOptions {
   nodeLimit?: number;
   shouldStop?: () => boolean;
   tt?: IntransitiveTT;
+  rootMoveHint?: Move | null;
 }
 
 export interface SearchResult {
@@ -95,6 +98,7 @@ export function createSearchContext(options: SearchContextOptions = {}): SearchC
     nodeLimit: options.nodeLimit,
     shouldStop: options.shouldStop,
     tt: options.tt ?? new IntransitiveTT(DEFAULT_TT_SIZE_BITS),
+    rootMoveHint: options.rootMoveHint ?? null,
   };
 }
 
@@ -182,37 +186,54 @@ export function hasRunnerThreat(game: IntransitiveGame): boolean {
   return false;
 }
 
-/** Tactical ordering only; it does not assign a score or prove a result. */
+function sameMoveHint(a: Move, b: Move | null | undefined): boolean {
+  return Boolean(b && a.from === b.from && a.to === b.to);
+}
+
+/**
+ * Tactical ordering only; it does not assign a score or prove a result.
+ *
+ * The preferred root move is the last completed PV's first move. The TT move
+ * is a weaker hint. Immediate legal goals come next, followed by the old
+ * tactical ordering. The sortable keys are computed once per move so a sort
+ * comparator does not repeatedly recalculate board distances.
+ */
 export function orderMovesTactically(
   moves: Move[],
   activePlayer: typeof PLAYER_BLUE | typeof PLAYER_RED,
-  ttMove?: Move | null
+  ttMove?: Move | null,
+  preferredMove?: Move | null
 ): void {
   if (moves.length <= 1) return;
   const goalSquare = activePlayer === PLAYER_BLUE ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
-  moves.sort((a, b) => {
-    if (ttMove) {
-      if (a.from === ttMove.from && a.to === ttMove.to) return -1;
-      if (b.from === ttMove.from && b.to === ttMove.to) return 1;
-    }
-    const aGoal = a.to === goalSquare ? 20000 : 0;
-    const bGoal = b.to === goalSquare ? 20000 : 0;
-    if (aGoal !== bGoal) return bGoal - aGoal;
+  const ordered = moves.map((move, index) => {
+    const distance = goalChebyshevDist(move.to, goalSquare);
+    let tacticalScore = -distance;
+    if (distance === 1) tacticalScore += 10000;
+    else if (distance === 2) tacticalScore += 3000;
+    if (move.captured !== undefined) tacticalScore += 1500;
 
-    const aDist = goalChebyshevDist(a.to, goalSquare);
-    const bDist = goalChebyshevDist(b.to, goalSquare);
-    const aD1 = aDist === 1 ? 10000 : 0;
-    const bD1 = bDist === 1 ? 10000 : 0;
-    if (aD1 !== bD1) return bD1 - aD1;
-    const aD2 = aDist === 2 ? 3000 : 0;
-    const bD2 = bDist === 2 ? 3000 : 0;
-    if (aD2 !== bD2) return bD2 - aD2;
-
-    const aCap = a.captured !== undefined ? 1500 : 0;
-    const bCap = b.captured !== undefined ? 1500 : 0;
-    if (aCap !== bCap) return bCap - aCap;
-    return aDist - bDist;
+    return {
+      move,
+      index,
+      // This order is intentionally a priority tier rather than an eval.
+      priority: sameMoveHint(move, preferredMove)
+        ? 3
+        : sameMoveHint(move, ttMove)
+          ? 2
+          : move.to === goalSquare
+            ? 1
+            : 0,
+      tacticalScore,
+    };
   });
+
+  ordered.sort((a, b) =>
+    b.priority - a.priority ||
+    b.tacticalScore - a.tacticalScore ||
+    a.index - b.index
+  );
+  moves.splice(0, moves.length, ...ordered.map((item) => item.move));
 }
 
 interface NodeResult {
@@ -343,7 +364,7 @@ function rootSearchDepth(
   if (moves.length === 0) return { candidates: [] };
 
   const ttEntry = context.tt.probe(game.zobristKey, 0);
-  orderMovesTactically(moves, game.activePlayer, ttEntry?.bestMove);
+  orderMovesTactically(moves, game.activePlayer, ttEntry?.bestMove, context.rootMoveHint);
 
   const candidates: RootCandidate[] = [];
   for (const move of moves) {
@@ -361,8 +382,73 @@ function rootSearchDepth(
 
   const maximizing = game.activePlayer === PLAYER_BLUE;
   candidates.sort((a, b) => maximizing ? b.score - a.score : a.score - b.score);
-  if (candidates[0]) context.tt.storeMove(game.zobristKey, depth, candidates[0].move);
+  if (candidates[0]) {
+    context.tt.storeMove(game.zobristKey, depth, candidates[0].move);
+    context.rootMoveHint = candidates[0].move;
+  }
   return { candidates };
+}
+
+/**
+ * Greedy root search for competitive best-move selection.
+ *
+ * The first root child is searched with a full window. Each later sibling
+ * reuses the root alpha/beta bounds, so a sibling that cannot improve the
+ * current best is cut off without paying for a second full-window search.
+ * Only the selected candidate is returned; this path is never used for
+ * softmax/root-noise exploration, where every candidate needs an exact score.
+ */
+function rootSearchGreedyDepth(
+  game: IntransitiveGame,
+  weights: EvaluationWeights | NNUEWeights,
+  depth: number,
+  context: SearchContext
+): RootDepthResult {
+  checkSearchNode(context);
+
+  const moves = game.generateLegalMoves();
+  if (moves.length === 0) return { candidates: [] };
+
+  const ttEntry = context.tt.probe(game.zobristKey, 0);
+  orderMovesTactically(moves, game.activePlayer, ttEntry?.bestMove, context.rootMoveHint);
+
+  const maximizing = game.activePlayer === PLAYER_BLUE;
+  let alpha = -Infinity;
+  let beta = Infinity;
+  let best: RootCandidate | null = null;
+
+  for (const move of moves) {
+    checkSearchNode(context);
+    if (!game.makeMove(move)) continue;
+
+    let child: NodeResult;
+    try {
+      child = searchNode(game, Math.max(0, depth - 1), alpha, beta, weights, 1, context);
+    } finally {
+      game.unmakeMove();
+    }
+
+    const candidate: RootCandidate = {
+      move,
+      score: child.score,
+      pv: [move, ...child.pv],
+      forced: child.forced,
+    };
+    const improves = best === null ||
+      (maximizing ? candidate.score > best.score : candidate.score < best.score);
+    if (improves) best = candidate;
+    if (!best) continue;
+
+    if (maximizing) alpha = Math.max(alpha, best.score);
+    else beta = Math.min(beta, best.score);
+  }
+
+  if (best) {
+    context.tt.storeMove(game.zobristKey, depth, best.move);
+    context.rootMoveHint = best.move;
+    return { candidates: [best] };
+  }
+  return { candidates: [] };
 }
 
 function movePolicyChoice(
@@ -450,7 +536,10 @@ function selectMoveFixedDepth(
 
   let root: RootDepthResult;
   try {
-    root = rootSearchDepth(game, weights, depth, searchContext);
+    const useGreedyRoot = activeTemperature <= 0.001 && activeRootNoise <= 0;
+    root = useGreedyRoot
+      ? rootSearchGreedyDepth(game, weights, depth, searchContext)
+      : rootSearchDepth(game, weights, depth, searchContext);
   } catch (error) {
     if (isSearchAbort(error)) {
       if (context) throw error;
@@ -463,12 +552,12 @@ function selectMoveFixedDepth(
     return {
       bestMove: null,
       score: terminalScore(game, 0) ?? evaluateAny(game, weights),
-      completedDepth: depth,
+      completedDepth: 0,
       nodes: searchContext.nodes,
       elapsedMs: Math.max(0, performance.now() - searchContext.startedAt),
       pv: [],
-      stopReason: 'depth',
-      scoreKind: 'exact',
+      stopReason: 'fallback',
+      scoreKind: 'static',
     };
   }
 
@@ -597,18 +686,21 @@ function sampleGamma(alpha: number, rng: () => number): number {
 }
 
 function formatPVContinuation(game: IntransitiveGame, pv: Move[]): string[] {
-  if (pv.length <= 1) return [];
+  if (pv.length === 0) return [];
   let made = 0;
   const result: string[] = [];
   try {
-    if (!game.makeMove(pv[0])) return result;
+    const rootMove = game.generateLegalMoves().find((move) => sameMove(move, pv[0]));
+    if (!rootMove || !game.makeMove(rootMove)) {
+      throw new Error('Search produced an illegal root PV move');
+    }
     made++;
     for (let i = 1; i < pv.length; i++) {
       if (game.isTerminal().isOver) break;
       const legal = game.generateLegalMoves().find((move) => sameMove(move, pv[i]));
-      if (!legal) break;
+      if (!legal) throw new Error('Search produced an illegal PV continuation');
       result.push(game.formatMoveSAN(legal));
-      if (!game.makeMove(legal)) break;
+      if (!game.makeMove(legal)) throw new Error('Search PV move could not be replayed');
       made++;
     }
     return result;

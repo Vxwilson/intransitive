@@ -33,6 +33,8 @@ export interface SearchRequest {
   limit: SearchLimit;
   maxDepth?: number;
   count?: number;
+  /** Production-only root policy; full is useful for MultiPV comparisons. */
+  rootMode?: 'greedy' | 'full';
 }
 
 export type SearchStopReason = 'depth' | 'node-budget' | 'time-budget' | 'fallback' | 'unsupported';
@@ -141,6 +143,7 @@ export interface BenchmarkReport {
   engineVersion: string;
   modelId: string;
   limit: SearchLimit;
+  rootMode?: 'greedy' | 'full';
   warmupRuns: number;
   measuredRuns: number;
   fixtures: BenchmarkFixtureSummary[];
