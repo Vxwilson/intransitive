@@ -264,6 +264,8 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                   {[
                     { d: 1, label: 'Depth 1 (Turbo)' },
                     { d: 2, label: 'Depth 2 (Tactical)' },
+                    { d: 3, label: 'Depth 3 (Deep)' },
+                    { d: 4, label: 'Depth 4 (Very Deep)' },
                   ].map(({ d, label }) => (
                     <button
                       key={d}
