@@ -37,6 +37,7 @@ import type {
   Checkpoint,
   WorkerResponse,
   AnalysisTelemetry,
+  ParallelTrainingState,
 } from '../engine/types';
 import type { NNUEWeights } from '../engine/nnue/types';
 import { deserializeWeights, serializeWeights } from '../engine/nnue/featureTransformer';
@@ -104,6 +105,8 @@ interface SavedSettings {
   playOpponentDepth?: number;
   playOpponentTimeSec?: number;
   trainingSearchDepth?: number;
+  trainingWorkerCount?: number;
+  trainingBatchGames?: number;
   learningRateAnnealing?: boolean;
   soundEnabled?: boolean;
   delayMs?: number;
@@ -227,6 +230,7 @@ export const IntransitiveStudio: React.FC = () => {
     bufferSize: number;
   } | null>(null);
   const [currentNNUEWeights, setCurrentNNUEWeights] = useState<NNUEWeights>(() => PRESET_NNUE_MASTER_WEIGHTS);
+  const [parallelTrainingState, setParallelTrainingState] = useState<ParallelTrainingState | undefined>();
 
   // Checkpoints State
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(() => getStoredCheckpoints());
@@ -286,6 +290,12 @@ export const IntransitiveStudio: React.FC = () => {
   const [isTournamentPaused, setIsTournamentPaused] = useState<boolean>(false);
   const [trainingSearchDepth, setTrainingSearchDepth] = useState<number>(
     initialSettings.trainingSearchDepth ?? 1
+  );
+  const [trainingWorkerCount, setTrainingWorkerCount] = useState<number>(
+    initialSettings.trainingWorkerCount ?? 1
+  );
+  const [trainingBatchGames, setTrainingBatchGames] = useState<number>(
+    initialSettings.trainingBatchGames ?? 1
   );
   const [learningRateAnnealing, setLearningRateAnnealing] = useState<boolean>(
     initialSettings.learningRateAnnealing ?? true
@@ -529,12 +539,13 @@ export const IntransitiveStudio: React.FC = () => {
       weights: trainerArchitecture === 'linear' ? weights : undefined,
       nnueWeights: trainerArchitecture === 'nnue' ? serializeWeights(currentNNUEWeights) : undefined,
       stats: stats,
+      trainingState: trainerArchitecture === 'linear' ? parallelTrainingState : undefined,
     };
     return [currentCp, ...checkpoints].map((checkpoint) => ({
       ...checkpoint,
       name: getCheckpointDisplayName(checkpoint),
     }));
-  }, [checkpoints, stats, trainerArchitecture, weights, currentNNUEWeights]);
+  }, [checkpoints, stats, trainerArchitecture, weights, currentNNUEWeights, parallelTrainingState]);
 
   // The definitive terminal status of the full match session (derived from activeMoveHistory or activeGame)
   const finalGameStatus = useMemo(() => {
@@ -683,6 +694,8 @@ export const IntransitiveStudio: React.FC = () => {
       fighterATimeSec,
       fighterBTimeSec,
       trainingSearchDepth,
+      trainingWorkerCount,
+      trainingBatchGames,
       learningRateAnnealing,
       soundEnabled,
       delayMs,
@@ -708,6 +721,8 @@ export const IntransitiveStudio: React.FC = () => {
     fighterATimeSec,
     fighterBTimeSec,
     trainingSearchDepth,
+    trainingWorkerCount,
+    trainingBatchGames,
     learningRateAnnealing,
     soundEnabled,
     delayMs,
@@ -735,6 +750,7 @@ export const IntransitiveStudio: React.FC = () => {
           });
           setStats(data.stats);
           setWeights(data.weights);
+          if (data.trainingState) setParallelTrainingState(data.trainingState);
           setSnapshotName(getDefaultCheckpointName(data.stats.generation));
           setSelectedBaselineId('current');
           break;
@@ -745,9 +761,14 @@ export const IntransitiveStudio: React.FC = () => {
           setTurboProgress(null);
           setStats(data.stats);
           setWeights(data.weights);
+          if (data.trainingState) setParallelTrainingState(data.trainingState);
           setSnapshotName(getDefaultCheckpointName(data.stats.generation));
           setSelectedBaselineId('current');
-          if (soundEnabledRef.current) sounds.playVictory();
+          if (data.error) {
+            console.error('[Turbo training]', data.error);
+          } else if (!data.isCancelled && soundEnabledRef.current) {
+            sounds.playVictory();
+          }
           break;
         }
 
@@ -1560,9 +1581,11 @@ export const IntransitiveStudio: React.FC = () => {
           searchDepth: trainingSearchDepth,
           learningRateAnnealing,
         },
+        workerCount: trainingWorkerCount,
+        batchGames: trainingBatchGames,
       });
     }
-  }, [trainingSearchDepth, learningRateAnnealing]);
+  }, [trainingSearchDepth, learningRateAnnealing, trainingWorkerCount, trainingBatchGames]);
 
   const handleStopTurbo = useCallback(() => {
     if (workerRef.current) {
@@ -1596,6 +1619,7 @@ export const IntransitiveStudio: React.FC = () => {
     if (workerRef.current) {
       workerRef.current.postMessage({ type: 'RESET_TRAINING' });
     }
+    setParallelTrainingState(undefined);
     handleResetGame();
     setSelectedBaselineId('preset-gen-0');
     setLastLoadedOrSavedGen(0);
@@ -1606,6 +1630,7 @@ export const IntransitiveStudio: React.FC = () => {
   const handleLoadBaseline = useCallback((id: string) => {
     let newW: EvaluationWeights = weights;
     let newStats: TrainingStats = stats;
+    let newTrainingState: ParallelTrainingState | undefined = parallelTrainingState;
 
     if (id === 'preset-nnue-500k') {
       setCurrentNNUEWeights(PRESET_NNUE_500K_WEIGHTS);
@@ -1614,6 +1639,7 @@ export const IntransitiveStudio: React.FC = () => {
       const preset500k = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-nnue-500k');
       const s = preset500k?.stats ?? createInitialStats(500000);
       setStats(s);
+      setParallelTrainingState(undefined);
       setLastLoadedOrSavedGen(s.generation);
       setSnapshotName(getDefaultCheckpointName(s.generation));
       return;
@@ -1624,6 +1650,7 @@ export const IntransitiveStudio: React.FC = () => {
       const preset10k = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-nnue-10k');
       const s = preset10k?.stats ?? createInitialStats(10000);
       setStats(s);
+      setParallelTrainingState(undefined);
       setLastLoadedOrSavedGen(s.generation);
       setSnapshotName(getDefaultCheckpointName(s.generation));
       return;
@@ -1634,23 +1661,27 @@ export const IntransitiveStudio: React.FC = () => {
       const masterPreset = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-nnue-master');
       const s = masterPreset?.stats ?? createInitialStats(5000);
       setStats(s);
+      setParallelTrainingState(undefined);
       setLastLoadedOrSavedGen(s.generation);
       setSnapshotName(getDefaultCheckpointName(s.generation));
       return;
     } else if (id === 'preset-gen-0') {
       newW = createZeroWeights();
       newStats = createInitialStats(0);
+      newTrainingState = undefined;
       setTrainerArchitecture('linear');
       setSelectedBaselineId('preset-gen-0');
     } else if (id === 'preset-heuristic-master') {
       newW = createHeuristicWeights();
       const masterPreset = PRESET_CHECKPOINTS.find((c) => c.id === 'preset-heuristic-master');
       newStats = masterPreset?.stats ?? createInitialStats(1000);
+      newTrainingState = undefined;
       setTrainerArchitecture('linear');
       setSelectedBaselineId('preset-heuristic-master');
     } else if (id === 'current') {
       newW = weights;
       newStats = stats;
+      newTrainingState = parallelTrainingState;
       setSelectedBaselineId('current');
     } else {
       const cp = checkpoints.find((c) => c.id === id);
@@ -1663,6 +1694,7 @@ export const IntransitiveStudio: React.FC = () => {
           setTrainerArchitecture('linear');
         }
         newStats = cp.stats ?? createInitialStats(cp.generation);
+        newTrainingState = cp.trainingState;
         setSelectedBaselineId(cp.id);
       } else {
         newW = weights;
@@ -1672,6 +1704,7 @@ export const IntransitiveStudio: React.FC = () => {
 
     setWeights(newW);
     setStats(newStats);
+    setParallelTrainingState(newTrainingState);
     setLastLoadedOrSavedGen(newStats.generation);
     setSnapshotName(getDefaultCheckpointName(newStats.generation));
 
@@ -1680,15 +1713,16 @@ export const IntransitiveStudio: React.FC = () => {
         type: 'SET_WEIGHTS',
         weights: newW,
         stats: newStats,
+        trainingState: newTrainingState,
       });
     }
-  }, [checkpoints, weights, stats]);
+  }, [checkpoints, weights, stats, parallelTrainingState]);
 
   const handleSaveCurrentCheckpoint = useCallback((name: string) => {
-    const cp = saveCheckpoint(name, stats.generation, weights, stats);
+    const cp = saveCheckpoint(name, stats.generation, weights, stats, undefined, parallelTrainingState);
     setCheckpoints(getStoredCheckpoints());
     return cp;
-  }, [stats, weights]);
+  }, [stats, weights, parallelTrainingState]);
 
   const handleHeaderSaveSnapshot = useCallback(() => {
     const finalName = snapshotName.trim() || getDefaultCheckpointName(stats.generation);
@@ -2325,6 +2359,8 @@ export const IntransitiveStudio: React.FC = () => {
             setPlayOpponentDepth(2);
             setPlayOpponentTimeSec(1.0);
             setTrainingSearchDepth(1);
+            setTrainingWorkerCount(1);
+            setTrainingBatchGames(1);
             setLearningRateAnnealing(true);
             setSoundEnabled(true);
             setDelayMs(300);
@@ -2343,6 +2379,10 @@ export const IntransitiveStudio: React.FC = () => {
             onResetTraining={handleResetTraining}
             trainingSearchDepth={trainingSearchDepth}
             onChangeTrainingSearchDepth={setTrainingSearchDepth}
+            trainingWorkerCount={trainingWorkerCount}
+            onChangeTrainingWorkerCount={setTrainingWorkerCount}
+            trainingBatchGames={trainingBatchGames}
+            onChangeTrainingBatchGames={setTrainingBatchGames}
             trainerArchitecture={trainerArchitecture}
             onChangeTrainerArchitecture={setTrainerArchitecture}
             isNNUETraining={isNNUETraining}

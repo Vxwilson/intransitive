@@ -6,6 +6,7 @@ import type { Player, Move } from '../core/types';
 import type { GameHistory } from '../core/game';
 import type { MatchGameLog } from '../harness/types';
 import type { SerializedNNUEWeights } from './nnue/types';
+import type { ParallelTrainingMetrics } from './parallelTraining';
 
 export interface EvaluationWeights {
   pieceValues: {
@@ -62,7 +63,7 @@ export interface TrainingStats {
   /** Learner color assignment counts for reproducibility diagnostics. */
   learnerBlueGames?: number;
   learnerRedGames?: number;
-  /** Actual opponent checkpoint/version labels selected during training. */
+  /** Actual opponent content/version IDs selected during training. */
   opponentVersions?: Record<string, number>;
   avgGameLength: number;
   history: GenerationPoint[];
@@ -99,6 +100,28 @@ export interface TrainingRunMetadata {
   learnerBlueGames: number | 'unknown';
   learnerRedGames: number | 'unknown';
   opponentVersions: Record<string, number>;
+  /** Present for Step 3 batched runs; absent on legacy checkpoints. */
+  workerCount?: number;
+  batchGames?: number;
+  policy?: string;
+  runId?: string;
+  runSeed?: number;
+  rngDerivation?: 'per-game-v1' | 'legacy-serial-v1';
+  searchNodes?: number;
+  acceptedLearningGames?: number;
+  metrics?: ParallelTrainingMetrics;
+}
+
+/** Exact-resume state for the versioned frozen-batch trainer. */
+export interface ParallelTrainingState {
+  schemaVersion: 1;
+  runId: string;
+  runSeed: number;
+  rngDerivation: 'per-game-v1';
+  nextBatchId: number;
+  nextGameId: number;
+  learnerVersion: number;
+  leagueBuffer: EvaluationWeights[];
 }
 
 export interface RankedMove {
@@ -123,6 +146,8 @@ export interface Checkpoint {
   stats: TrainingStats;
   /** Optional Package 3 run metadata; absent on legacy checkpoints. */
   trainingMetadata?: TrainingRunMetadata;
+  /** Optional exact-resume state; absent on legacy and serial checkpoints. */
+  trainingState?: ParallelTrainingState;
 }
 
 // Features extracted from a game state for TD gradient calculation
@@ -155,7 +180,14 @@ export interface AnalysisTelemetry {
 
 // Worker message protocol
 export type WorkerRequest =
-  | { type: 'START_TURBO'; totalGames: number; config?: Partial<TrainingConfig> }
+  | {
+      type: 'START_TURBO';
+      totalGames: number;
+      config?: Partial<TrainingConfig>;
+      workerCount?: number;
+      batchGames?: number;
+      seed?: number;
+    }
   | { type: 'STOP_TURBO' }
   | {
       type: 'START_NNUE_TRAIN';
@@ -208,8 +240,18 @@ export type WorkerRequest =
       count?: number;
     }
   | { type: 'STOP_ANALYSIS' }
-  | { type: 'SET_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
-  | { type: 'SYNC_WEIGHTS'; weights: EvaluationWeights; stats?: TrainingStats }
+  | {
+      type: 'SET_WEIGHTS';
+      weights: EvaluationWeights;
+      stats?: TrainingStats;
+      trainingState?: ParallelTrainingState;
+    }
+  | {
+      type: 'SYNC_WEIGHTS';
+      weights: EvaluationWeights;
+      stats?: TrainingStats;
+      trainingState?: ParallelTrainingState;
+    }
   | { type: 'RESET_TRAINING' };
 
 export type WorkerResponse =
@@ -220,11 +262,21 @@ export type WorkerResponse =
       nps: number;
       stats: TrainingStats;
       weights: EvaluationWeights;
+      metrics?: ParallelTrainingMetrics;
+      workerCount?: number;
+      batchGames?: number;
+      trainingState?: ParallelTrainingState;
     }
   | {
       type: 'TURBO_COMPLETE';
       stats: TrainingStats;
       weights: EvaluationWeights;
+      metrics?: ParallelTrainingMetrics;
+      workerCount?: number;
+      batchGames?: number;
+      isCancelled?: boolean;
+      error?: string;
+      trainingState?: ParallelTrainingState;
     }
   | {
       type: 'NNUE_TRAIN_PROGRESS';

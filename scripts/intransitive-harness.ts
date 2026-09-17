@@ -1,8 +1,11 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { getStoredCheckpoints } from '../src/custom/engine/checkpoint.ts';
 import { cloneWeights, createHeuristicWeights } from '../src/custom/engine/evaluator.ts';
 import { SelfPlayTrainer } from '../src/custom/engine/trainer.ts';
+import type { GameRecord } from '../src/custom/engine/trainer.ts';
+import { createNodeSelfPlayPool } from './nodeSelfPlayPool.ts';
+import { runParallelSelfPlayTraining } from '../src/custom/engine/parallelTraining.ts';
 import { deserializeWeights } from '../src/custom/engine/nnue/featureTransformer.ts';
 import { INTRANSITIVE_FIXTURES } from '../src/custom/harness/fixtures.ts';
 import {
@@ -51,10 +54,12 @@ Production search supports depth, node, and wall-time limits. The reference
 engine remains a correctness oracle, not a strength claim.
 
 Training options:
-  --start master|heuristic|zero|<checkpoint-id> (default: master)
+  --start master|heuristic|zero|<checkpoint-id>|path.json (default: master)
   --opponent heuristic|<checkpoint-id>             (default: heuristic)
   --games N --seed N --search-depth N             (defaults: 3, 1, 1)
   --max-plies N --learning-rate N --lambda N --epsilon N
+  --workers N --batch-games N                     (defaults: 1, 1; batch mode is opt-in)
+  --run-id ID                                     stable parallel-run identity (optional)
   --no-annealing                                  disable learning-rate annealing
   --output path --log path                        new checkpoint and optional JSONL log`);
   process.exit(2);
@@ -109,7 +114,16 @@ function findCheckpoint(identifier: string) {
     advanced: 'preset-advanced',
   };
   const id = aliases[identifier.toLowerCase()] ?? identifier;
-  const checkpoint = getStoredCheckpoints().find((candidate) => candidate.id === id);
+  let checkpoint: Checkpoint | undefined;
+  if (existsSync(resolve(identifier))) {
+    try {
+      const parsed = JSON.parse(readFileSync(resolve(identifier), 'utf8')) as Checkpoint;
+      if (parsed && typeof parsed.id === 'string' && parsed.stats) checkpoint = parsed;
+    } catch {
+      // Fall through to the built-in and stored checkpoint lookup below.
+    }
+  }
+  checkpoint ??= getStoredCheckpoints().find((candidate) => candidate.id === id);
   if (!checkpoint) {
     console.error(`Unknown checkpoint or model: ${identifier}`);
     process.exit(2);
@@ -236,7 +250,7 @@ function linearWeights(checkpoint: Checkpoint, label: string) {
   return cloneWeights(checkpoint.weights);
 }
 
-function runTrainingCommand(args: Map<string, string>): void {
+async function runTrainingCommand(args: Map<string, string>): Promise<void> {
   const startIdentifier = args.get('start') ?? 'master';
   const opponentIdentifier = args.get('opponent') ?? 'heuristic';
   const startCheckpoint = findCheckpoint(startIdentifier);
@@ -250,6 +264,8 @@ function runTrainingCommand(args: Map<string, string>): void {
 
   const requestedGames = Math.max(1, Math.floor(trainingNumber(args, 'games', 3)));
   const seed = Math.floor(trainingNumber(args, 'seed', 1));
+  const workerCount = Math.max(1, Math.floor(trainingNumber(args, 'workers', 1)));
+  const batchGames = Math.max(1, Math.floor(trainingNumber(args, 'batch-games', 1)));
   const config = {
     searchDepth: Math.max(1, Math.floor(trainingNumber(args, 'search-depth', 1))),
     maxPliesPerGame: Math.max(1, Math.floor(trainingNumber(args, 'max-plies', 80))),
@@ -258,23 +274,51 @@ function runTrainingCommand(args: Map<string, string>): void {
     epsilon: Math.max(0, Math.min(1, trainingNumber(args, 'epsilon', 0.10))),
     learningRateAnnealing: !args.has('no-annealing'),
   };
+  // Preserve the established online serial baseline for the default command.
+  // Any requested batch or >1 worker uses the frozen-policy protocol and the
+  // persistent worker_threads pool below.
+  const useParallel = workerCount > 1 || batchGames > 1;
+  const savedState = useParallel && startCheckpoint.trainingState?.schemaVersion === 1
+    ? startCheckpoint.trainingState
+    : undefined;
+  const isExactResume = savedState !== undefined && !args.has('seed') && !args.has('run-id');
+  const runSeed = isExactResume ? savedState.runSeed : seed;
+  const runId = args.get('run-id') ?? (isExactResume ? savedState.runId : `cli-linear-td-${runSeed}`);
   const trainer = new SelfPlayTrainer(startWeights, config, {
-    rng: createSeededRng(seed),
+    ...(useParallel ? {} : { rng: createSeededRng(seed) }),
     learnerColorPolicy: 'alternate',
     opponentPolicy: 'fixed',
     opponentWeights,
     opponentId: opponentCheckpoint.id,
+    runId,
+    runSeed,
     initialStats: JSON.parse(JSON.stringify(startCheckpoint.stats)),
+    ...(savedState ? { leagueBuffer: savedState.leagueBuffer } : {}),
   });
 
   const startedAt = performance.now();
   const startedCpu = process.cpuUsage();
-  const games = [];
-  let positions = 0;
-  for (let game = 0; game < requestedGames; game++) {
-    const record = trainer.playSelfPlayGame();
-    games.push(record);
-    positions += record.plies;
+  let games: GameRecord[];
+  let parallelMetrics;
+  if (useParallel) {
+    const pool = createNodeSelfPlayPool(workerCount);
+    try {
+      const run = await runParallelSelfPlayTraining(trainer, pool, {
+        totalGames: requestedGames,
+        batchGames,
+        workerCount,
+        ...(isExactResume ? { initialBatchId: savedState.nextBatchId } : {}),
+      });
+      games = run.records;
+      parallelMetrics = run.metrics;
+    } finally {
+      pool.close();
+    }
+  } else {
+    games = [];
+    for (let game = 0; game < requestedGames; game++) {
+      games.push(trainer.playSelfPlayGame());
+    }
   }
   const elapsedWallMs = Math.round(performance.now() - startedAt);
   const elapsedCpu = process.cpuUsage(startedCpu);
@@ -291,12 +335,12 @@ function runTrainingCommand(args: Map<string, string>): void {
       learnerColorPolicy: trainer.learnerColorPolicy,
       opponentPolicy: trainer.opponentPolicy,
     },
-    seed,
+    seed: runSeed,
     startCheckpointId: startCheckpoint.id,
     startCheckpointName: startCheckpoint.name,
     requestedGames,
     actualGames: games.length,
-    positions,
+    positions: parallelMetrics?.positions ?? games.reduce((total, game) => total + game.plies, 0),
     terminalGames,
     truncatedGames,
     elapsedWallMs,
@@ -304,12 +348,21 @@ function runTrainingCommand(args: Map<string, string>): void {
     learnerBlueGames: games.filter((game) => game.learnerColor === 'blue').length,
     learnerRedGames: games.filter((game) => game.learnerColor === 'red').length,
     opponentVersions: games.reduce<Record<string, number>>((counts, game) => {
-      counts[game.opponentId] = (counts[game.opponentId] ?? 0) + 1;
+      counts[game.opponentVersionId] = (counts[game.opponentVersionId] ?? 0) + 1;
       return counts;
     }, {}),
+    workerCount,
+    batchGames,
+    policy: useParallel ? 'training-v1-frozen-batch' : 'training-v1-serial-online',
+    runId,
+    runSeed,
+    rngDerivation: useParallel ? 'per-game-v1' : 'legacy-serial-v1',
+    searchNodes: parallelMetrics?.searchNodes,
+    acceptedLearningGames: parallelMetrics?.acceptedLearningGames ?? terminalGames,
+    metrics: parallelMetrics,
   };
   const checkpoint: Checkpoint = {
-    id: `training-${Date.now()}-${seed}`,
+    id: `training-${Date.now()}-${runSeed}`,
     name: args.get('name') ?? `Linear TD self-play from ${startCheckpoint.name}`,
     generation: trainer.stats.generation,
     timestamp: Date.now(),
@@ -317,9 +370,10 @@ function runTrainingCommand(args: Map<string, string>): void {
     weights: trainer.weights,
     stats: trainer.stats,
     trainingMetadata: metadata,
+    ...(parallelMetrics ? { trainingState: trainer.getParallelTrainingState(parallelMetrics.nextBatchId) } : {}),
   };
 
-  const outputPath = ensureOutputParent(args.get('output') ?? `${DEFAULT_REPORT_DIR}/package-3-linear-td-seed-${seed}.json`);
+  const outputPath = ensureOutputParent(args.get('output') ?? `${DEFAULT_REPORT_DIR}/package-3-linear-td-seed-${runSeed}.json`);
   writeFileSync(outputPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
   const logPath = args.get('log');
   let absoluteLogPath: string | undefined;
@@ -328,7 +382,7 @@ function runTrainingCommand(args: Map<string, string>): void {
     writeFileSync(absoluteLogPath, games.map((game) => JSON.stringify({
       kind: 'intransitive-linear-td-game',
       engineVersion: LINEAR_TD_ENGINE_VERSION,
-      seed,
+      runSeed,
       ...game,
     })).join('\n') + '\n');
   }
@@ -339,14 +393,17 @@ function runTrainingCommand(args: Map<string, string>): void {
   }, null, 2));
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const command = process.argv[2];
   if (!command) usage();
   const args = parseArgs(process.argv.slice(3));
   if (command === 'benchmark') runBenchmarkCommand(args);
   else if (command === 'match') runMatchCommand(args);
-  else if (command === 'train') runTrainingCommand(args);
+  else if (command === 'train') await runTrainingCommand(args);
   else usage();
 }
 
-main();
+void main().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

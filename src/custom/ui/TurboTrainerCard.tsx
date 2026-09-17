@@ -28,6 +28,10 @@ interface TurboTrainerCardProps {
   onResetTraining: () => void;
   trainingSearchDepth?: number;
   onChangeTrainingSearchDepth?: (depth: number) => void;
+  trainingWorkerCount?: number;
+  onChangeTrainingWorkerCount?: (count: number) => void;
+  trainingBatchGames?: number;
+  onChangeTrainingBatchGames?: (count: number) => void;
   trainerArchitecture?: 'linear' | 'nnue';
   onChangeTrainerArchitecture?: (arch: 'linear' | 'nnue') => void;
   isNNUETraining?: boolean;
@@ -45,6 +49,10 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
   onResetTraining,
   trainingSearchDepth = 1,
   onChangeTrainingSearchDepth,
+  trainingWorkerCount = 1,
+  onChangeTrainingWorkerCount,
+  trainingBatchGames = 1,
+  onChangeTrainingBatchGames,
   trainerArchitecture = 'linear',
   onChangeTrainerArchitecture,
   isNNUETraining = false,
@@ -248,6 +256,52 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {!activeIsTraining && trainerArchitecture === 'linear' && onChangeTrainingWorkerCount && onChangeTrainingBatchGames && (
+        <div
+          style={{
+            marginTop: '0.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '0.75rem',
+            padding: '0.42rem 0.75rem',
+            background: '#faf8f5',
+            borderRadius: '8px',
+            border: '1px solid #eee8de',
+            fontSize: '0.74rem',
+          }}
+        >
+          <span style={{ fontWeight: 700, color: '#4a4239' }}>Parallel generation:</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <label style={{ color: '#786f66' }}>
+              Workers{' '}
+              <select
+                value={trainingWorkerCount}
+                onChange={(event) => onChangeTrainingWorkerCount(Number(event.target.value))}
+                className="intransitive-select"
+                aria-label="Self-play worker count"
+              >
+                {[1, 2, 4, 8].map((count) => <option key={count} value={count}>{count}</option>)}
+              </select>
+            </label>
+            <label style={{ color: '#786f66' }}>
+              Batch{' '}
+              <select
+                value={trainingBatchGames}
+                onChange={(event) => onChangeTrainingBatchGames(Number(event.target.value))}
+                className="intransitive-select"
+                aria-label="Self-play batch size"
+              >
+                {[1, 2, 4, 8, 16, 32].map((count) => <option key={count} value={count}>{count} games</option>)}
+              </select>
+            </label>
+          </div>
+          <span style={{ color: '#786f66', fontSize: '0.69rem' }}>
+            Frozen-policy batches update in game-ID order.
+          </span>
         </div>
       )}
 

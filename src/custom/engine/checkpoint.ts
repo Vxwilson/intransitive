@@ -227,7 +227,8 @@ export function saveCheckpoint(
   generation: number,
   weights: EvaluationWeights,
   stats: TrainingStats,
-  trainingMetadata?: TrainingRunMetadata
+  trainingMetadata?: TrainingRunMetadata,
+  trainingState?: Checkpoint['trainingState']
 ): Checkpoint {
   const newCheckpoint: Checkpoint = {
     id: `checkpoint-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -238,6 +239,7 @@ export function saveCheckpoint(
     weights: JSON.parse(JSON.stringify(weights)),
     stats: JSON.parse(JSON.stringify(stats)),
     ...(trainingMetadata ? { trainingMetadata: JSON.parse(JSON.stringify(trainingMetadata)) } : {}),
+    ...(trainingState ? { trainingState: JSON.parse(JSON.stringify(trainingState)) } : {}),
   };
 
   const storage = getStorage();

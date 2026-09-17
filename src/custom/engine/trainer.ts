@@ -5,20 +5,40 @@
 
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
-import type { GameStatus } from '../core/types';
 import type { Player, Move } from '../core/types';
 import type {
   EvaluationWeights,
   TrainingConfig,
   TrainingStats,
   GenerationPoint,
+  ParallelTrainingState,
 } from './types';
 import type { NNUEWeights } from './nnue/types';
-import { evaluate, extractFeatures, createHeuristicWeights, cloneWeights } from './evaluator';
+import { createHeuristicWeights, cloneWeights } from './evaluator';
+import { TDLearner } from './tdLearner';
 import { selectMove } from './search';
-import { TDLearner, type TrajectoryStep } from './tdLearner';
+import {
+  deriveSelfPlaySeed,
+  createSelfPlayRng,
+  evaluationWeightsVersionId,
+  generateSelfPlayGame as generateSelfPlayGameJob,
+  makeSelfPlayJobId,
+  SELF_PLAY_JOB_SCHEMA_VERSION,
+  SELF_PLAY_POLICY_VERSION,
+  type SelfPlayGameJob,
+  type SelfPlayGameResult,
+  type SelfPlayOpening,
+  type SelfPlayRngDerivation,
+} from './selfPlay';
+
+export { signedTerminalReward } from './selfPlay';
 
 export interface GameRecord {
+  jobId: string;
+  seed: number;
+  rngDerivation: SelfPlayRngDerivation;
+  learnerVersion: number;
+  opponentVersionId: string;
   winner: Player | 'draw' | null;
   reason: string | null;
   plies: number;
@@ -43,15 +63,14 @@ export interface SelfPlayTrainerOptions {
   opponentPolicy?: OpponentPolicy;
   opponentWeights?: EvaluationWeights;
   opponentId?: string;
+  /** Stable run identity used to reject stale/out-of-run results. */
+  runId?: string;
+  /** Run seed used to derive reproducible per-game job seeds. */
+  runSeed?: number;
   /** Resume lifetime statistics without mutating the source checkpoint. */
   initialStats?: TrainingStats;
-}
-
-export function signedTerminalReward(status: GameStatus): number {
-  if (!status.isOver) return 0;
-  if (status.winner === PLAYER_BLUE) return 1000;
-  if (status.winner === PLAYER_RED) return -1000;
-  return 0;
+  /** Resume the frozen-batch league without sharing mutable snapshots. */
+  leagueBuffer?: EvaluationWeights[];
 }
 
 function copyStats(stats: TrainingStats): TrainingStats {
@@ -66,6 +85,9 @@ export class SelfPlayTrainer {
   public readonly learnerColorPolicy: LearnerColorPolicy;
   public readonly opponentPolicy: OpponentPolicy;
   private readonly rng: () => number;
+  private readonly runId: string;
+  private readonly runSeed: number;
+  private readonly rngDerivation: SelfPlayRngDerivation;
   private readonly fixedOpponentWeights?: EvaluationWeights;
   private readonly fixedOpponentId: string;
 
@@ -76,10 +98,17 @@ export class SelfPlayTrainer {
   ) {
     this.weights = weights;
     this.learner = new TDLearner(config);
-    this.leagueBuffer = [cloneWeights(weights)];
+    this.leagueBuffer = options.leagueBuffer?.map((snapshot) => cloneWeights(snapshot)) ?? [cloneWeights(weights)];
     this.learnerColorPolicy = options.learnerColorPolicy ?? 'alternate';
     this.opponentPolicy = options.opponentPolicy ?? 'league-heuristic';
     this.rng = options.rng ?? Math.random;
+    this.rngDerivation = options.rng ? 'legacy-serial-v1' : 'per-game-v1';
+    this.runId = options.runId ?? 'serial-linear-td';
+    this.runSeed = options.runSeed ?? (
+      this.rngDerivation === 'per-game-v1'
+        ? Math.floor(Math.random() * 0x100000000)
+        : 0
+    );
     this.fixedOpponentWeights = options.opponentWeights;
     this.fixedOpponentId = options.opponentId ?? 'fixed-opponent';
     this.stats = options.initialStats ? copyStats(options.initialStats) : {
@@ -120,160 +149,235 @@ export class SelfPlayTrainer {
     return gameNumber % 2 === 0;
   }
 
-  private chooseOpponent(): { weights: EvaluationWeights; id: string } {
+  private chooseOpponent(rng: () => number = this.rng): { weights: EvaluationWeights; id: string; versionId: string } {
     if (this.opponentPolicy === 'fixed') {
+      const weights = this.fixedOpponentWeights ?? createHeuristicWeights();
       return {
-        weights: this.fixedOpponentWeights ?? createHeuristicWeights(),
+        weights,
         id: this.fixedOpponentId,
+        versionId: evaluationWeightsVersionId(this.fixedOpponentId, weights),
       };
     }
 
     // Keep the existing league schedule as the controlled baseline: current
     // self-play 65%, historical checkpoint 20%, and heuristic anchor 15%.
-    const rOpponent = this.rng();
+    const rOpponent = rng();
     if (rOpponent < 0.15) {
-      return { weights: createHeuristicWeights(), id: 'heuristic-baseline' };
+      const weights = createHeuristicWeights();
+      return {
+        weights,
+        id: 'heuristic-baseline',
+        versionId: evaluationWeightsVersionId('heuristic-baseline', weights),
+      };
     }
     if (rOpponent < 0.35 && this.leagueBuffer.length > 0) {
       const index = Math.min(
         this.leagueBuffer.length - 1,
-        Math.floor(this.rng() * this.leagueBuffer.length)
+        Math.floor(rng() * this.leagueBuffer.length)
       );
-      return { weights: this.leagueBuffer[index], id: `historical-${index + 1}` };
+      const id = `historical-${index + 1}`;
+      return {
+        weights: this.leagueBuffer[index],
+        id,
+        versionId: evaluationWeightsVersionId(id, this.leagueBuffer[index]),
+      };
     }
-    return { weights: this.weights, id: 'current-learner' };
+    return {
+      weights: this.weights,
+      id: 'current-learner',
+      versionId: evaluationWeightsVersionId('current-learner', this.weights, this.stats.generation),
+    };
   }
 
   /**
-   * Plays a single linear TD self-play game and updates only on a
-   * rules-defined terminal result. A safety-cap truncation is recorded but
-   * deliberately contributes no pseudo-outcome and no TD update.
+   * Creates a serializable, frozen-snapshot job. Creating a job does not
+   * mutate canonical weights, statistics, or league state.
    */
-  public playSelfPlayGame(startFen?: string): GameRecord {
-    const game = new IntransitiveGame(startFen);
-    const trajectory: TrajectoryStep[] = [];
-    const moves: Move[] = [];
+  public createSelfPlayGameJob(
+    startFen?: string,
+    options: { batchId?: number; gameId?: number; opening?: SelfPlayOpening } = {}
+  ): SelfPlayGameJob {
+    if (startFen !== undefined && options.opening !== undefined) {
+      throw new Error('A self-play job cannot specify both a starting FEN and replay history');
+    }
+    const gameId = options.gameId ?? this.stats.gamesPlayed;
+    const learnerIsBlue = this.learnerIsBlue(gameId);
+    const opponentRng = this.rngDerivation === 'per-game-v1'
+      ? createSelfPlayRng(deriveSelfPlaySeed(this.runSeed, gameId, 0x4f50504f))
+      : this.rng;
+    const opponent = this.chooseOpponent(opponentRng);
+    const learnerWeights = cloneWeights(this.weights);
+    const opponentWeights = cloneWeights(opponent.weights);
+    const batchId = options.batchId ?? 0;
+    return {
+      schemaVersion: SELF_PLAY_JOB_SCHEMA_VERSION,
+      jobId: makeSelfPlayJobId(this.runId, batchId, gameId),
+      runId: this.runId,
+      batchId,
+      gameId,
+      learnerVersion: this.stats.generation,
+      seed: deriveSelfPlaySeed(this.runSeed, gameId),
+      rngDerivation: this.rngDerivation,
+      learnerColor: learnerIsBlue ? 'blue' : 'red',
+      learner: {
+        modelId: 'current-learner',
+        versionId: evaluationWeightsVersionId('current-learner', learnerWeights, this.stats.generation),
+        weights: learnerWeights,
+      },
+      opponent: {
+        modelId: opponent.id,
+        versionId: opponent.versionId,
+        weights: opponentWeights,
+      },
+      search: {
+        depth: this.learner.config.searchDepth,
+        maxPlies: this.learner.config.maxPliesPerGame,
+        policy: SELF_PLAY_POLICY_VERSION,
+      },
+      ...(startFen !== undefined ? { startFen } : {}),
+      ...(options.opening ? { opening: options.opening } : {}),
+    };
+  }
 
-    const { searchDepth, maxPliesPerGame } = this.learner.config;
-    const learnerIsBlue = this.learnerIsBlue(this.stats.gamesPlayed);
-    const opponent = this.chooseOpponent();
-    const learnerColor = learnerIsBlue ? 'blue' : 'red';
+  /**
+   * Creates a complete frozen-policy batch before any result is committed.
+   * Game IDs are allocated from the coordinator's next committed ID, so the
+   * same batch is independent of worker count and completion order.
+   */
+  public createSelfPlayBatchJobs(batchId: number, count: number): SelfPlayGameJob[] {
+    if (!Number.isInteger(batchId) || batchId < 0) {
+      throw new Error(`Self-play batch ID must be a non-negative integer, got ${batchId}`);
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      throw new Error(`Self-play batch size must be a positive integer, got ${count}`);
+    }
+    const firstGameId = this.stats.gamesPlayed;
+    return Array.from({ length: count }, (_, offset) =>
+      this.createSelfPlayGameJob(undefined, {
+        batchId,
+        gameId: firstGameId + offset,
+      })
+    );
+  }
+
+  /** Serialize coordinator state required for exact new-format resume. */
+  public getParallelTrainingState(nextBatchId: number): ParallelTrainingState {
+    if (!Number.isInteger(nextBatchId) || nextBatchId < 0) {
+      throw new Error(`Next self-play batch ID must be a non-negative integer, got ${nextBatchId}`);
+    }
+    if (this.rngDerivation !== 'per-game-v1') {
+      throw new Error('Exact parallel resume requires per-game-v1 RNG derivation');
+    }
+    return {
+      schemaVersion: 1,
+      runId: this.runId,
+      runSeed: this.runSeed,
+      rngDerivation: this.rngDerivation,
+      nextBatchId,
+      nextGameId: this.stats.gamesPlayed,
+      learnerVersion: this.stats.generation,
+      leagueBuffer: this.leagueBuffer.map((snapshot) => cloneWeights(snapshot)),
+    };
+  }
+
+  /** Generate a job result without mutating coordinator-owned state. */
+  public generateSelfPlayGame(job: SelfPlayGameJob): SelfPlayGameResult {
+    const rng = job.rngDerivation === 'per-game-v1'
+      ? createSelfPlayRng(job.seed)
+      : this.rng;
+    return generateSelfPlayGameJob(job, rng);
+  }
+
+  /**
+   * Applies one result in deterministic game-ID order. Only this coordinator
+   * method mutates canonical weights, statistics, or the league buffer.
+   */
+  public applySelfPlayGameResult(result: SelfPlayGameResult): GameRecord {
+    if (result.schemaVersion !== SELF_PLAY_JOB_SCHEMA_VERSION) {
+      throw new Error(`Unsupported self-play result schema: ${result.schemaVersion}`);
+    }
+    if (result.runId !== this.runId) {
+      throw new Error(`Stale self-play result run: expected ${this.runId}, got ${result.runId}`);
+    }
+    if (result.gameId !== this.stats.gamesPlayed) {
+      throw new Error(
+        `Out-of-order self-play result: expected game ${this.stats.gamesPlayed}, got ${result.gameId}`
+      );
+    }
+    const expectedJobId = makeSelfPlayJobId(result.runId, result.batchId, result.gameId);
+    if (result.jobId !== expectedJobId) {
+      throw new Error(`Self-play result job ID mismatch: expected ${expectedJobId}, got ${result.jobId}`);
+    }
+
+    const outcome = result.outcome;
     const opponentVersions = this.stats.opponentVersions ?? (this.stats.opponentVersions = {});
-    opponentVersions[opponent.id] = (opponentVersions[opponent.id] ?? 0) + 1;
-    if (learnerIsBlue) {
+    opponentVersions[result.opponentVersionId] =
+      (opponentVersions[result.opponentVersionId] ?? 0) + 1;
+    if (result.learnerColor === 'blue') {
       this.stats.learnerBlueGames = (this.stats.learnerBlueGames ?? 0) + 1;
     } else {
       this.stats.learnerRedGames = (this.stats.learnerRedGames ?? 0) + 1;
     }
 
-    while (trajectory.length < maxPliesPerGame) {
-      const status = game.isTerminal();
-      if (status.isOver) break;
+    if (outcome.isTerminal && (outcome.winner === PLAYER_BLUE || outcome.winner === PLAYER_RED)) {
+      const isBlue = outcome.winner === PLAYER_BLUE;
+      if (isBlue) this.stats.blueWins++;
+      else this.stats.redWins++;
 
-      const currentPly = trajectory.length;
-      const isBlue = game.activePlayer === PLAYER_BLUE;
-      const currentWeights = isBlue === learnerIsBlue ? this.weights : opponent.weights;
-
-      // Keep the existing multi-stage exploration schedule for the baseline:
-      // - Plies 0..4 (Opening): T = 24 cp, Dirichlet noise = 0.25 (escape certainty, branch opening tree)
-      // - Plies 5..8 (Midgame transition): T = 10 cp, Dirichlet noise = 0.08
-      // - Plies 9+ (Tactical conversion & endgame): T = 0 cp, Dirichlet noise = 0.0 (greedy argmax)
-      let temp = 0.0;
-      let noise = 0.0;
-      if (currentPly < 5) {
-        temp = 24.0;
-        noise = 0.25;
-      } else if (currentPly < 9) {
-        temp = 10.0;
-        noise = 0.08;
+      this.stats.touchdownWins ??= { blue: 0, red: 0 };
+      this.stats.eliminationWins ??= { blue: 0, red: 0 };
+      if (outcome.reason === 'touchdown') {
+        if (isBlue) this.stats.touchdownWins.blue++;
+        else this.stats.touchdownWins.red++;
+      } else if (outcome.reason === 'elimination') {
+        if (isBlue) this.stats.eliminationWins.blue++;
+        else this.stats.eliminationWins.red++;
+      } else if (outcome.reason === 'immobilization') {
+        this.stats.immobilizations = (this.stats.immobilizations ?? 0) + 1;
       }
-
-      const { bestMove } = selectMove(game, currentWeights, {
-        depth: searchDepth,
-        temperature: temp,
-        rootNoise: noise,
-        ply: currentPly,
-        rng: this.rng,
-      });
-      if (!bestMove) break;
-
-      const features = extractFeatures(game);
-      const evalScore = evaluate(game, this.weights);
-      trajectory.push({ features, evalScore });
-
-      moves.push(bestMove);
-      game.makeMove(bestMove);
-    }
-
-    const finalStatus = game.isTerminal();
-    const isTerminal = finalStatus.isOver;
-    const isTruncated = !isTerminal;
-    const terminalReward = signedTerminalReward(finalStatus);
-    if (isTerminal && (finalStatus.winner === PLAYER_BLUE || finalStatus.winner === PLAYER_RED)) {
-      const isBlue = finalStatus.winner === PLAYER_BLUE;
-      if (isBlue) {
-        this.stats.blueWins++;
-      } else {
-        this.stats.redWins++;
-      }
-
-      // Track specific terminal win reasons
-      if (this.stats.touchdownWins && this.stats.eliminationWins) {
-        if (finalStatus.reason === 'touchdown') {
-          if (isBlue) this.stats.touchdownWins.blue++;
-          else this.stats.touchdownWins.red++;
-        } else if (finalStatus.reason === 'elimination') {
-          if (isBlue) this.stats.eliminationWins.blue++;
-          else this.stats.eliminationWins.red++;
-        } else if (finalStatus.reason === 'immobilization') {
-          this.stats.immobilizations = (this.stats.immobilizations || 0) + 1;
-        }
-      }
-    } else if (isTerminal) {
+    } else if (outcome.isTerminal) {
       this.stats.draws++;
-      if (finalStatus.reason === 'repetition') {
-        this.stats.drawRepetition = (this.stats.drawRepetition || 0) + 1;
-      } else if (finalStatus.reason === '50-move') {
-        this.stats.draw50Move = (this.stats.draw50Move || 0) + 1;
+      if (outcome.reason === 'repetition') {
+        this.stats.drawRepetition = (this.stats.drawRepetition ?? 0) + 1;
+      } else if (outcome.reason === '50-move') {
+        this.stats.draw50Move = (this.stats.draw50Move ?? 0) + 1;
       }
     }
 
-    if (isTerminal) {
-      // Linear TD self-play baseline: terminal wins are ±1000, draws are 0.
-      this.learner.updateWeights(this.weights, trajectory, terminalReward, this.stats.generation);
+    if (outcome.isTerminal) {
+      this.learner.updateWeights(
+        this.weights,
+        result.trajectory,
+        outcome.terminalReward,
+        this.stats.generation
+      );
       this.stats.terminalGames = (this.stats.terminalGames ?? 0) + 1;
     } else {
       this.stats.truncatedGames = (this.stats.truncatedGames ?? 0) + 1;
     }
-    this.stats.positionsSeen = (this.stats.positionsSeen ?? 0) + trajectory.length;
+    this.stats.positionsSeen = (this.stats.positionsSeen ?? 0) + result.trajectory.length;
 
     this.stats.gamesPlayed++;
     this.stats.generation++;
     this.stats.currentAlpha = this.learner.getEffectiveLearningRate(this.stats.generation);
 
-    // Update game length tracking
-    const plies = moves.length;
+    const plies = result.moves.length;
     if (!this.stats.shortestGamePlies || plies < this.stats.shortestGamePlies) {
       this.stats.shortestGamePlies = plies;
     }
     if (!this.stats.longestGamePlies || plies > this.stats.longestGamePlies) {
       this.stats.longestGamePlies = plies;
     }
-
-    // Update average game length running average
     this.stats.avgGameLength = Math.round(
       (this.stats.avgGameLength * (this.stats.gamesPlayed - 1) + plies) /
         this.stats.gamesPlayed
     );
 
-    // Record history snapshot every milestone
     if (this.stats.generation % 10 === 0 || this.stats.generation <= 10) {
       const totalDecisive = this.stats.blueWins + this.stats.redWins;
-      const blueWinRate =
-        totalDecisive > 0
-          ? Math.round((this.stats.blueWins / totalDecisive) * 100)
-          : 50;
-
+      const blueWinRate = totalDecisive > 0
+        ? Math.round((this.stats.blueWins / totalDecisive) * 100)
+        : 50;
       const point: GenerationPoint = {
         generation: this.stats.generation,
         R: Math.round(this.weights.pieceValues.R * 10) / 10,
@@ -284,25 +388,38 @@ export class SelfPlayTrainer {
       this.stats.history.push(point);
     }
 
-    // Save snapshot to rolling historical league buffer every 50 generations (up to 12 models)
     if (this.stats.generation % 50 === 0) {
       this.leagueBuffer.push(cloneWeights(this.weights));
-      if (this.leagueBuffer.length > 12) {
-        this.leagueBuffer.shift();
-      }
+      if (this.leagueBuffer.length > 12) this.leagueBuffer.shift();
     }
 
     return {
-      winner: finalStatus.winner,
-      reason: finalStatus.reason ?? 'max-plies',
+      jobId: result.jobId,
+      seed: result.seed,
+      rngDerivation: result.rngDerivation,
+      learnerVersion: result.learnerVersion,
+      opponentVersionId: result.opponentVersionId,
+      winner: outcome.winner,
+      reason: outcome.reason,
       plies,
-      moves,
-      isTerminal,
-      isTruncated,
-      terminalReward,
-      learnerColor,
-      opponentId: opponent.id,
+      moves: result.moves,
+      isTerminal: outcome.isTerminal,
+      isTruncated: outcome.isTruncated,
+      terminalReward: outcome.terminalReward,
+      learnerColor: result.learnerColor,
+      opponentId: result.opponentId,
     };
+  }
+
+  /**
+   * Serial compatibility wrapper: generate one job, generate its trajectory,
+   * then apply exactly one result. This preserves the original online TD
+   * update order while exposing the new pure job boundary.
+   */
+  public playSelfPlayGame(startFen?: string): GameRecord {
+    const job = this.createSelfPlayGameJob(startFen);
+    const result = this.generateSelfPlayGame(job);
+    return this.applySelfPlayGameResult(result);
   }
 
   /**

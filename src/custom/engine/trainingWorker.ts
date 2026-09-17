@@ -5,9 +5,12 @@
 
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
-import { createZeroWeights } from './evaluator';
+import { cloneWeights, createZeroWeights } from './evaluator';
 import { selectMove, getTopMoves, isSearchAbort, MAX_SEARCH_DEPTH } from './search';
 import { SelfPlayTrainer } from './trainer';
+import { createBrowserSelfPlayPool } from './browserSelfPlayPool';
+import { runParallelSelfPlayTraining, type ParallelTrainingProgress } from './parallelTraining';
+import type { SelfPlayWorkerPool } from './selfPlayPool';
 import { NNUETrainer } from './nnue/nnueTrainer';
 import { deserializeWeights, serializeWeights, getActiveFeatures } from './nnue/featureTransformer';
 import { createMasterNNUEWeights } from './nnue/nnueWeights';
@@ -26,11 +29,13 @@ import type {
   EvaluationWeights,
   TrainingConfig,
   RankedMove,
+  ParallelTrainingState,
 } from './types';
 
 // Worker state
 let currentWeights: EvaluationWeights = createZeroWeights();
 let trainer = new SelfPlayTrainer(currentWeights);
+let currentParallelTrainingState: ParallelTrainingState | undefined;
 let currentNNUEWeights: NNUEWeights = createMasterNNUEWeights();
 let nnueTrainer = new NNUETrainer(currentNNUEWeights, { batchSize: 128, learningRate: 0.001 });
 let isNNUETraining = false;
@@ -38,6 +43,8 @@ let nnueCancelled = false;
 
 let isTurboRunning = false;
 let turboCancelled = false;
+let turboPool: SelfPlayWorkerPool | null = null;
+let turboRunNumber = 0;
 let isArenaRunning = false;
 let isArenaPaused = false;
 let arenaCancelled = false;
@@ -58,63 +65,102 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       isTurboRunning = true;
       turboCancelled = false;
 
-      const totalGames = req.totalGames;
-      if (req.config) {
-        Object.assign(trainer.learner.config, req.config);
-      }
+      const totalGames = Math.max(0, Math.floor(req.totalGames));
+      const workerCount = Math.max(1, Math.floor(req.workerCount ?? 1));
+      const batchGames = Math.max(1, Math.floor(req.batchGames ?? 1));
+      const resumeState = currentParallelTrainingState;
+      const isResumingRun = req.seed === undefined && resumeState !== undefined;
+      const runSeed = isResumingRun
+        ? resumeState.runSeed
+        : req.seed ?? Math.floor(Math.random() * 0x100000000);
+      const previousStats = trainer.stats;
+      const previousLeagueBuffer = trainer.leagueBuffer.map((snapshot) => cloneWeights(snapshot));
+      const nextConfig = { ...trainer.learner.config, ...(req.config ?? {}) };
+      trainer = new SelfPlayTrainer(currentWeights, nextConfig, {
+        runId: isResumingRun ? resumeState.runId : `browser-linear-td-${runSeed}-${turboRunNumber++}`,
+        runSeed,
+        learnerColorPolicy: 'alternate',
+        opponentPolicy: 'league-heuristic',
+        initialStats: previousStats,
+      });
+      // A new run context changes seed/policy metadata but must not erase the
+      // centrally scheduled historical league snapshots.
+      trainer.leagueBuffer = previousLeagueBuffer;
 
-      let completed = 0;
-      const startTime = performance.now();
-      const chunkSize = Math.min(trainer.learner.config.searchDepth > 1 ? 5 : 25, totalGames);
-
-      function runChunk() {
-        if (turboCancelled) {
-          isTurboRunning = false;
-          post({
-            type: 'TURBO_COMPLETE',
-            stats: trainer.stats,
-            weights: trainer.weights,
-          });
-          return;
-        }
-
-        const chunkEnd = Math.min(totalGames, completed + chunkSize);
-        while (completed < chunkEnd && !turboCancelled) {
-          trainer.playSelfPlayGame();
-          completed++;
-        }
-
-        const elapsedSec = Math.max(0.001, (performance.now() - startTime) / 1000);
-        const nps = Math.round((completed * trainer.stats.avgGameLength) / elapsedSec);
-
+      let pool: SelfPlayWorkerPool;
+      try {
+        pool = createBrowserSelfPlayPool(workerCount);
+        turboPool = pool;
+      } catch (error) {
+        isTurboRunning = false;
         post({
-          type: 'TURBO_PROGRESS',
-          completed,
-          total: totalGames,
-          nps,
+          type: 'TURBO_COMPLETE',
           stats: trainer.stats,
           weights: trainer.weights,
+          workerCount,
+          batchGames,
+          error: error instanceof Error ? error.message : String(error),
         });
-
-        if (completed < totalGames && !turboCancelled) {
-          setTimeout(runChunk, 0);
-        } else {
-          isTurboRunning = false;
-          post({
-            type: 'TURBO_COMPLETE',
-            stats: trainer.stats,
-            weights: trainer.weights,
-          });
-        }
+        break;
       }
 
-      runChunk();
+      const reportProgress = (progress: ParallelTrainingProgress) => {
+        const elapsedSec = Math.max(0.001, progress.metrics.elapsedWallMs / 1000);
+        const nps = Math.round(progress.metrics.positions / elapsedSec);
+        currentParallelTrainingState = trainer.getParallelTrainingState(progress.metrics.nextBatchId);
+        post({
+          type: 'TURBO_PROGRESS',
+          completed: progress.completed,
+          total: progress.total,
+          nps,
+          stats: progress.stats,
+          weights: progress.weights,
+          metrics: progress.metrics,
+          workerCount,
+          batchGames,
+          trainingState: currentParallelTrainingState,
+        });
+      };
+
+      void runParallelSelfPlayTraining(trainer, pool, {
+        totalGames,
+        batchGames,
+        workerCount,
+        ...(isResumingRun ? { initialBatchId: resumeState.nextBatchId } : {}),
+        shouldCancel: () => turboCancelled,
+        onProgress: reportProgress,
+      }).then((run) => {
+        currentParallelTrainingState = trainer.getParallelTrainingState(run.metrics.nextBatchId);
+        post({
+          type: 'TURBO_COMPLETE',
+          stats: trainer.stats,
+          weights: trainer.weights,
+          metrics: run.metrics,
+          workerCount,
+          batchGames,
+          isCancelled: run.metrics.cancelled,
+          trainingState: currentParallelTrainingState,
+        });
+      }).catch((error: unknown) => {
+        pool.close();
+        post({
+          type: 'TURBO_COMPLETE',
+          stats: trainer.stats,
+          weights: trainer.weights,
+          workerCount,
+          batchGames,
+          error: error instanceof Error ? error.message : String(error),
+          trainingState: currentParallelTrainingState,
+        });
+      }).finally(() => {
+        if (turboPool === pool) turboPool = null;
+        isTurboRunning = false;
+      });
       break;
     }
 
     case 'STOP_TURBO': {
       turboCancelled = true;
-      isTurboRunning = false;
       break;
     }
 
@@ -735,10 +781,15 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     case 'SET_WEIGHTS': {
       currentWeights = req.weights;
       const prevConfig: Partial<TrainingConfig> = { ...trainer.learner.config };
-      trainer = new SelfPlayTrainer(currentWeights, prevConfig);
-      if (req.stats) {
-        trainer.stats = req.stats;
-      }
+      currentParallelTrainingState = req.trainingState;
+      trainer = new SelfPlayTrainer(currentWeights, prevConfig, {
+        ...(req.trainingState ? {
+          runId: req.trainingState.runId,
+          runSeed: req.trainingState.runSeed,
+          leagueBuffer: req.trainingState.leagueBuffer,
+        } : {}),
+        ...(req.stats ? { initialStats: req.stats } : {}),
+      });
       post({
         type: 'CURRENT_STATE',
         weights: trainer.weights,
@@ -749,6 +800,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
 
     case 'RESET_TRAINING': {
       currentWeights = createZeroWeights();
+      currentParallelTrainingState = undefined;
       trainer = new SelfPlayTrainer(currentWeights);
       post({
         type: 'CURRENT_STATE',

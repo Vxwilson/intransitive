@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "tsx src/core/chess.test.ts && tsx src/engine/engine.test.ts && tsx src/custom/core/game.test.ts && tsx src/custom/core/pgn.test.ts && tsx src/custom/engine/engine.test.ts && tsx src/custom/engine/package1.test.ts && tsx src/custom/engine/package2.test.ts && tsx src/custom/engine/package3.test.ts && tsx src/custom/engine/accuracy.test.ts && tsx src/custom/engine/nnue/nnue.test.ts && tsx src/custom/harness/harness.test.ts",
+    "test": "tsx src/core/chess.test.ts && tsx src/engine/engine.test.ts && tsx src/custom/core/game.test.ts && tsx src/custom/core/pgn.test.ts && tsx src/custom/engine/engine.test.ts && tsx src/custom/engine/package1.test.ts && tsx src/custom/engine/package2.test.ts && tsx src/custom/engine/package3.test.ts && tsx src/custom/engine/parallelTraining.test.ts && tsx src/custom/engine/accuracy.test.ts && tsx src/custom/engine/nnue/nnue.test.ts && tsx src/custom/harness/harness.test.ts",
     "test:intransitive:harness": "tsx src/custom/harness/harness.test.ts",
     "intransitive:benchmark": "tsx scripts/intransitive-harness.ts benchmark",
     "intransitive:match": "tsx scripts/intransitive-harness.ts match",
