@@ -1,6 +1,11 @@
 /**
- * Intransitive Custom Engine - Minimax Alpha-Beta Search & Move Selection
- * Supports depth 1-3 search with epsilon-greedy exploration for self-play training.
+ * Intransitive custom engine search.
+ *
+ * Package 1 deliberately favors a small, auditable search over clever
+ * shortcuts: terminal draws are exact zeroes, runway analysis is not a proof
+ * cutoff, and the transposition table supplies move ordering only. Every
+ * root search owns its context and therefore cannot reuse scores from another
+ * evaluator, clock, or repetition history.
  */
 
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
@@ -11,8 +16,7 @@ import type { EvaluationWeights, RankedMove } from './types';
 import { evaluate, WIN_SCORE, LOSS_SCORE, DRAW_SCORE } from './evaluator';
 import { evaluateNNUE } from './nnue/nnueEvaluator';
 import type { NNUEWeights } from './nnue/types';
-import { globalIntransitiveTT, TTFlag } from './transposition';
-
+import { IntransitiveTT } from './transposition';
 import {
   findUnstoppableRunway,
   evaluateRunwayRace,
@@ -21,74 +25,164 @@ import {
 
 export { findUnstoppableRunway, evaluateRunwayRace, type UnstoppableRunway };
 
+export const MAX_SEARCH_DEPTH = 64;
+export const DEFAULT_TT_SIZE_BITS = 16;
+
+export type SearchLimit =
+  | { kind: 'depth'; depth: number }
+  | { kind: 'nodes'; nodes: number }
+  | { kind: 'time'; timeMs: number };
+
+export type SearchStopReason =
+  | 'depth'
+  | 'node-budget'
+  | 'time-budget'
+  | 'aborted'
+  | 'fallback';
+
+export type SearchScoreKind = 'exact' | 'partial' | 'static' | 'bound';
+
+export interface SearchContext {
+  nodes: number;
+  startedAt: number;
+  deadlineMs?: number;
+  nodeLimit?: number;
+  shouldStop?: () => boolean;
+  /** Move-ordering table owned by this root-search session. */
+  tt: IntransitiveTT;
+}
+
+export type SearchContextInput = SearchContext | { nodes: number };
+
+export interface SearchContextOptions {
+  deadlineMs?: number;
+  nodeLimit?: number;
+  shouldStop?: () => boolean;
+  tt?: IntransitiveTT;
+}
+
+export interface SearchResult {
+  bestMove: Move | null;
+  /** Blue-relative score. */
+  score: number;
+  completedDepth: number;
+  nodes: number;
+  elapsedMs: number;
+  pv: Move[];
+  stopReason: SearchStopReason;
+  scoreKind: SearchScoreKind;
+}
+
+export class SearchAbort extends Error {
+  public readonly reason: Exclude<SearchStopReason, 'depth' | 'fallback'>;
+
+  public constructor(reason: Exclude<SearchStopReason, 'depth' | 'fallback'>) {
+    super(reason);
+    this.name = 'SearchAbort';
+    this.reason = reason;
+  }
+}
+
+export function isSearchAbort(error: unknown): error is SearchAbort {
+  return error instanceof SearchAbort;
+}
+
+export function createSearchContext(options: SearchContextOptions = {}): SearchContext {
+  return {
+    nodes: 0,
+    startedAt: performance.now(),
+    deadlineMs: options.deadlineMs,
+    nodeLimit: options.nodeLimit,
+    shouldStop: options.shouldStop,
+    tt: options.tt ?? new IntransitiveTT(DEFAULT_TT_SIZE_BITS),
+  };
+}
+
+function normalizeContext(
+  input: SearchContextInput | undefined,
+  shouldStop?: () => boolean
+): SearchContext {
+  if (!input) return createSearchContext({ shouldStop });
+
+  const context = input as SearchContext;
+  if (!context.tt) context.tt = new IntransitiveTT(DEFAULT_TT_SIZE_BITS);
+  if (!context.startedAt) context.startedAt = performance.now();
+  if (shouldStop) {
+    const previous = context.shouldStop;
+    context.shouldStop = () => Boolean(previous?.() || shouldStop());
+  }
+  return context;
+}
+
+function checkSearchNode(context: SearchContext): void {
+  if (context.shouldStop?.()) throw new SearchAbort('aborted');
+  if (context.nodeLimit !== undefined && context.nodes >= context.nodeLimit) {
+    throw new SearchAbort('node-budget');
+  }
+  if (context.deadlineMs !== undefined && performance.now() >= context.deadlineMs) {
+    throw new SearchAbort('time-budget');
+  }
+  context.nodes++;
+}
+
+function terminalScore(game: IntransitiveGame, ply: number): number | null {
+  const status = game.isTerminal();
+  if (!status.isOver) return null;
+  if (status.winner === PLAYER_BLUE) return WIN_SCORE - ply;
+  if (status.winner === PLAYER_RED) return LOSS_SCORE + ply;
+  return DRAW_SCORE;
+}
+
 export function isNNUEWeights(w: EvaluationWeights | NNUEWeights): w is NNUEWeights {
   return typeof w === 'object' && w !== null && 'w0' in w;
 }
 
 export function evaluateAny(game: IntransitiveGame, weights: EvaluationWeights | NNUEWeights): number {
-  if (isNNUEWeights(weights)) {
-    return evaluateNNUE(game, weights);
-  }
+  if (isNNUEWeights(weights)) return evaluateNNUE(game, weights);
   return evaluate(game, weights);
 }
 
-export interface SearchResult {
-  bestMove: Move | null;
-  score: number;
-}
-
-/**
- * Format score into display string:
- * - If forced win/mate: "+M1", "+M2", "-M1", "-M2" (moves to mate)
- * - If standard score: "+250", "-120", "0"
- */
+/** Format a Blue-relative score into a compact display string. */
 export function formatEvalScore(
   score: number,
   isMate?: boolean,
   mateInPlies?: number
 ): string {
-  const MATE_THRESHOLD = WIN_SCORE - 100;
-  if (isMate || Math.abs(score) >= MATE_THRESHOLD) {
-    const plies = Math.max(1, mateInPlies ?? (score > 0 ? WIN_SCORE - score : score - LOSS_SCORE));
+  const mateThreshold = WIN_SCORE - 100;
+  if (isMate || Math.abs(score) >= mateThreshold) {
+    const plies = Math.max(
+      1,
+      mateInPlies ?? (score > 0 ? WIN_SCORE - score : score - LOSS_SCORE)
+    );
     const moves = Math.max(1, Math.ceil(plies / 2));
-    const sign = score >= 0 ? '+' : '-';
-    return `${sign}M${moves}`;
+    return `${score >= 0 ? '+' : '-'}M${moves}`;
   }
   return score > 0 ? `+${score}` : `${score}`;
 }
 
-export const DRAW_CONTEMPT_FACTOR = 120;
-export const REPETITION_PENALTY_2FOLD = 60;
+/** @deprecated Draw contempt is disabled in correctness-first search. */
+export const DRAW_CONTEMPT_FACTOR = 0;
+/** @deprecated Twofold repetition penalties are disabled in correctness-first search. */
+export const REPETITION_PENALTY_2FOLD = 0;
 
-/**
- * Chebyshev distance to goal square (number of king-steps).
- */
 export function goalChebyshevDist(sq: number, goalSq: number): number {
   const r1 = Math.floor(sq / 9), c1 = sq % 9;
   const r2 = Math.floor(goalSq / 9), c2 = goalSq % 9;
   return Math.max(Math.abs(r1 - r2), Math.abs(c1 - c2));
 }
 
-/**
- * Checks whether either player has an immediate touchdown threat (runner at distance 1).
- */
 export function hasRunnerThreat(game: IntransitiveGame): boolean {
   for (let sq = 0; sq < 81; sq++) {
     const code = game.board[sq];
     if (code === 0) continue;
-    // Blue pieces: code 1..3, Red pieces: code 9..11 (high bit set)
     const isBlue = code <= 3;
     const goalSq = isBlue ? BLUE_GOAL_SQUARE : RED_GOAL_SQUARE;
-    if (goalChebyshevDist(sq, goalSq) === 1) {
-      return true;
-    }
+    if (goalChebyshevDist(sq, goalSq) === 1) return true;
   }
   return false;
 }
 
-/**
- * Orders moves tactically: prioritize TT best move, touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity.
- */
+/** Tactical ordering only; it does not assign a score or prove a result. */
 export function orderMovesTactically(
   moves: Move[],
   activePlayer: typeof PLAYER_BLUE | typeof PLAYER_RED,
@@ -107,13 +201,9 @@ export function orderMovesTactically(
 
     const aDist = goalChebyshevDist(a.to, goalSquare);
     const bDist = goalChebyshevDist(b.to, goalSquare);
-
-    // Distance 1 runner threat (immediate M1 threat)
     const aD1 = aDist === 1 ? 10000 : 0;
     const bD1 = bDist === 1 ? 10000 : 0;
     if (aD1 !== bD1) return bD1 - aD1;
-
-    // Distance 2 runner threat
     const aD2 = aDist === 2 ? 3000 : 0;
     const bD2 = bDist === 2 ? 3000 : 0;
     if (aD2 !== bD2) return bD2 - aD2;
@@ -121,15 +211,95 @@ export function orderMovesTactically(
     const aCap = a.captured !== undefined ? 1500 : 0;
     const bCap = b.captured !== undefined ? 1500 : 0;
     if (aCap !== bCap) return bCap - aCap;
-
     return aDist - bDist;
   });
 }
 
-/**
- * Minimax search with Alpha-Beta pruning, Transposition Table, Touchdown Threat Extensions, and mate-distance scoring.
- * Score is always evaluated from Blue's perspective (positive = Blue advantage).
- */
+interface NodeResult {
+  score: number;
+  pv: Move[];
+  forced: boolean;
+}
+
+interface RootCandidate {
+  move: Move;
+  score: number;
+  pv: Move[];
+  forced: boolean;
+}
+
+interface RootDepthResult {
+  candidates: RootCandidate[];
+}
+
+function sameMove(a: Move, b: Move): boolean {
+  return a.from === b.from && a.to === b.to && a.piece === b.piece && a.captured === b.captured;
+}
+
+function searchNode(
+  game: IntransitiveGame,
+  depth: number,
+  alpha: number,
+  beta: number,
+  weights: EvaluationWeights | NNUEWeights,
+  ply: number,
+  context: SearchContext
+): NodeResult {
+  checkSearchNode(context);
+
+  const terminal = terminalScore(game, ply);
+  if (terminal !== null) {
+    return { score: terminal, pv: [], forced: game.isTerminal().winner !== 'draw' };
+  }
+  if (depth <= 0) return { score: evaluateAny(game, weights), pv: [], forced: false };
+
+  const entry = context.tt.probe(game.zobristKey, ply);
+  const moves = game.generateLegalMoves();
+  if (moves.length === 0) {
+    const noMoveScore = terminalScore(game, ply);
+    return {
+      score: noMoveScore ?? evaluateAny(game, weights),
+      pv: [],
+      forced: noMoveScore !== null && game.isTerminal().winner !== 'draw',
+    };
+  }
+  orderMovesTactically(moves, game.activePlayer, entry?.bestMove);
+
+  const maximizing = game.activePlayer === PLAYER_BLUE;
+  let bestScore = maximizing ? -Infinity : Infinity;
+  let bestMove: Move | null = null;
+  let bestPv: Move[] = [];
+  let bestForced = false;
+
+  for (const move of moves) {
+    checkSearchNode(context);
+    if (!game.makeMove(move)) continue;
+
+    let child: NodeResult;
+    try {
+      child = searchNode(game, depth - 1, alpha, beta, weights, ply + 1, context);
+    } finally {
+      game.unmakeMove();
+    }
+
+    const isBetter = maximizing ? child.score > bestScore : child.score < bestScore;
+    if (isBetter || bestMove === null) {
+      bestScore = child.score;
+      bestMove = move;
+      bestPv = [move, ...child.pv];
+      bestForced = child.forced;
+    }
+
+    if (maximizing) alpha = Math.max(alpha, bestScore);
+    else beta = Math.min(beta, bestScore);
+    if (alpha >= beta) break;
+  }
+
+  if (bestMove) context.tt.storeMove(game.zobristKey, depth, bestMove);
+  return { score: bestScore, pv: bestPv, forced: bestForced };
+}
+
+/** Legacy-compatible recursive entry point. */
 export function minimax(
   game: IntransitiveGame,
   depth: number,
@@ -137,604 +307,365 @@ export function minimax(
   beta: number,
   weights: EvaluationWeights | NNUEWeights,
   ply: number = 0,
-  context?: { nodes: number },
-  extensions: number = 0
+  contextInput?: SearchContextInput,
+  _extensions: number = 0
 ): number {
-  if (context) context.nodes++;
-  const status = game.isTerminal();
-  if (status.isOver) {
-    if (status.winner === PLAYER_BLUE) return WIN_SCORE - ply;
-    if (status.winner === PLAYER_RED) return LOSS_SCORE + ply;
-    if (ply > 0) {
-      return game.activePlayer === PLAYER_RED ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
-    }
-    return DRAW_SCORE;
-  }
-
-  // Runway cutoff: if a mathematically unstoppable runway exists, resolve immediately!
-  const runwayEval = evaluateRunwayRace(game);
-  if (runwayEval) {
-    return runwayEval.score > 0 ? runwayEval.score - ply : runwayEval.score + ply;
-  }
-
-  // TT probe (internal nodes)
-  const origAlpha = alpha;
-  const origBeta = beta;
-  let ttMove: Move | null = null;
-
-  if (ply > 0) {
-    const entry = globalIntransitiveTT.probe(game.zobristKey, ply);
-    if (entry) {
-      ttMove = entry.bestMove;
-      if (entry.depth >= depth) {
-        if (entry.flag === TTFlag.Exact) {
-          return entry.score;
-        } else if (entry.flag === TTFlag.LowerBound) {
-          alpha = Math.max(alpha, entry.score);
-        } else if (entry.flag === TTFlag.UpperBound) {
-          beta = Math.min(beta, entry.score);
-        }
-        if (alpha >= beta) {
-          return entry.score;
-        }
-      }
-    }
-  }
-
-  // Touchdown Extension: if a runner is within 1 step of goal, extend search branch by 1 ply (depth >= 3)
-  let effectiveDepth = depth;
-  let nextExtensions = extensions;
-  if (depth >= 3 && extensions < 2 && hasRunnerThreat(game)) {
-    effectiveDepth = depth + 1;
-    nextExtensions = extensions + 1;
-  }
-
-  if (effectiveDepth <= 0) {
-    return evaluateAny(game, weights);
-  }
-
-  const moves = game.generateLegalMoves();
-  if (moves.length === 0) {
-    const term = game.isTerminal();
-    if (term.winner === PLAYER_BLUE) return WIN_SCORE - ply;
-    if (term.winner === PLAYER_RED) return LOSS_SCORE + ply;
-    return evaluateAny(game, weights);
-  }
-
-  // Tactical move ordering: TT best move, touchdown wins, runner threats, captures
-  if (effectiveDepth > 1 && moves.length > 1) {
-    orderMovesTactically(moves, game.activePlayer, ttMove);
-  }
-
-  const isMaximizing = game.activePlayer === PLAYER_BLUE;
-  let bestMove: Move | null = moves[0];
-
-  if (isMaximizing) {
-    let maxEval = -Infinity;
-    for (let i = 0; i < moves.length; i++) {
-      const move = moves[i];
-      game.makeMove(move);
-      const repCount = game.getRepetitionCount();
-      let score: number;
-      if (repCount >= 3) {
-        score = -DRAW_CONTEMPT_FACTOR;
-      } else {
-        score = minimax(game, effectiveDepth - 1, alpha, beta, weights, ply + 1, context, nextExtensions);
-        if (repCount === 2) {
-          score -= REPETITION_PENALTY_2FOLD;
-        }
-      }
-      game.unmakeMove();
-
-      if (score > maxEval) {
-        maxEval = score;
-        bestMove = move;
-      }
-      if (score > alpha) {
-        alpha = score;
-      }
-      if (beta <= alpha) {
-        break; // Beta cutoff
-      }
-    }
-
-    let flag: (typeof TTFlag)[keyof typeof TTFlag] = TTFlag.Exact;
-    if (maxEval <= origAlpha) {
-      flag = TTFlag.UpperBound;
-    } else if (maxEval >= origBeta) {
-      flag = TTFlag.LowerBound;
-    }
-    globalIntransitiveTT.store(game.zobristKey, depth, maxEval, flag, bestMove, ply);
-
-    return maxEval;
-  } else {
-    let minEval = Infinity;
-    for (let i = 0; i < moves.length; i++) {
-      const move = moves[i];
-      game.makeMove(move);
-      const repCount = game.getRepetitionCount();
-      let score: number;
-      if (repCount >= 3) {
-        score = DRAW_CONTEMPT_FACTOR;
-      } else {
-        score = minimax(game, effectiveDepth - 1, alpha, beta, weights, ply + 1, context, nextExtensions);
-        if (repCount === 2) {
-          score += REPETITION_PENALTY_2FOLD;
-        }
-      }
-      game.unmakeMove();
-
-      if (score < minEval) {
-        minEval = score;
-        bestMove = move;
-      }
-      if (score < beta) {
-        beta = score;
-      }
-      if (beta <= alpha) {
-        break; // Alpha cutoff
-      }
-    }
-
-    let flag: (typeof TTFlag)[keyof typeof TTFlag] = TTFlag.Exact;
-    if (minEval <= origAlpha) {
-      flag = TTFlag.UpperBound;
-    } else if (minEval >= origBeta) {
-      flag = TTFlag.LowerBound;
-    }
-    globalIntransitiveTT.store(game.zobristKey, depth, minEval, flag, bestMove, ply);
-
-    return minEval;
-  }
+  const context = normalizeContext(contextInput);
+  return searchNode(game, depth, alpha, beta, weights, ply, context).score;
 }
 
 export interface SelectMoveOptions {
+  /** Fixed-depth mode. In time/node mode this is only a legacy hint. */
   depth?: number;
-  temperature?: number;      // Softmax temperature (in centipawns, e.g. 15-20 cp). 0 = greedy.
-  rootNoise?: number;        // Dirichlet exploration noise fraction (e.g. 0.25 in AlphaZero). 0 = disabled.
-  ply?: number;              // Current game ply for temperature annealing.
-  openingPlies?: number;     // Number of initial plies to apply temperature (default 6).
-  thinkTimeSec?: number;     // Thinking time budget in seconds (mutually exclusive with fixed depth).
-  thinkTimeMs?: number;      // Thinking time budget in milliseconds.
+  /** Separate maximum-depth safety ceiling for time/node searches. */
+  maxDepth?: number;
+  temperature?: number;
+  rootNoise?: number;
+  /** Actual game ply, not halfmoveClock. */
+  ply?: number;
+  openingPlies?: number;
+  thinkTimeSec?: number;
+  thinkTimeMs?: number;
+  limit?: SearchLimit;
+  shouldStop?: () => boolean;
+  rng?: () => number;
 }
 
-/**
- * Core fixed-depth move selection for active player.
- */
-function selectMoveFixedDepth(
+function rootSearchDepth(
   game: IntransitiveGame,
   weights: EvaluationWeights | NNUEWeights,
-  optionsOrDepth: number | SelectMoveOptions = 1,
-  legacyEpsilon: number = 0.0
-): SearchResult {
+  depth: number,
+  context: SearchContext
+): RootDepthResult {
+  checkSearchNode(context);
+
   const moves = game.generateLegalMoves();
-  if (moves.length === 0) {
-    return { bestMove: null, score: evaluateAny(game, weights) };
+  if (moves.length === 0) return { candidates: [] };
+
+  const ttEntry = context.tt.probe(game.zobristKey, 0);
+  orderMovesTactically(moves, game.activePlayer, ttEntry?.bestMove);
+
+  const candidates: RootCandidate[] = [];
+  for (const move of moves) {
+    checkSearchNode(context);
+    if (!game.makeMove(move)) continue;
+
+    let child: NodeResult;
+    try {
+      child = searchNode(game, Math.max(0, depth - 1), -Infinity, Infinity, weights, 1, context);
+    } finally {
+      game.unmakeMove();
+    }
+    candidates.push({ move, score: child.score, pv: [move, ...child.pv], forced: child.forced });
   }
 
-  // Parse options
-  let depth = 1;
-  let temperature = 0.0;
-  let rootNoise = 0.0;
-  let ply = 0;
-  let openingPlies: number | undefined = undefined;
+  const maximizing = game.activePlayer === PLAYER_BLUE;
+  candidates.sort((a, b) => maximizing ? b.score - a.score : a.score - b.score);
+  if (candidates[0]) context.tt.storeMove(game.zobristKey, depth, candidates[0].move);
+  return { candidates };
+}
 
-  if (typeof optionsOrDepth === 'number') {
-    depth = optionsOrDepth;
-    if (legacyEpsilon > 0 && Math.random() < legacyEpsilon) {
-      temperature = 25.0; // convert legacy epsilon into soft exploration
-    }
-  } else {
-    depth = optionsOrDepth.depth ?? 1;
-    temperature = optionsOrDepth.temperature ?? 0.0;
-    rootNoise = optionsOrDepth.rootNoise ?? 0.0;
-    ply = optionsOrDepth.ply ?? 0;
-    openingPlies = optionsOrDepth.openingPlies;
-  }
+function movePolicyChoice(
+  candidates: RootCandidate[],
+  maximizing: boolean,
+  temperature: number,
+  rootNoise: number,
+  rng: () => number
+): RootCandidate {
+  if (temperature <= 0.001 && rootNoise <= 0) return candidates[0];
 
-  // Increment TT age on root searches
-  if (ply === 0) {
-    globalIntransitiveTT.incrementAge();
-  }
-
-  // Anneal temperature: after openingPlies, drop temperature and noise to 0 for greedy conversion
-  const isOpening = openingPlies !== undefined ? ply < openingPlies : true;
-  const activeTemp = isOpening ? temperature : 0.0;
-  const activeNoise = isOpening ? rootNoise : 0.0;
-
-  // Root move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
-  orderMovesTactically(moves, game.activePlayer);
-
-  const isMaximizing = game.activePlayer === PLAYER_BLUE;
-  const scoredMoves: Array<{ move: Move; score: number }> = [];
-
-  for (let i = 0; i < moves.length; i++) {
-    const move = moves[i];
-    game.makeMove(move);
-
-    let score: number;
-    const term = game.isTerminal();
-    const repCount = game.getRepetitionCount();
-
-    if (term.isOver) {
-      if (term.winner === PLAYER_BLUE) {
-        score = WIN_SCORE - 1;
-      } else if (term.winner === PLAYER_RED) {
-        score = LOSS_SCORE + 1;
-      } else {
-        score = isMaximizing ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
-      }
-    } else {
-      const runwayEval = evaluateRunwayRace(game);
-      if (runwayEval) {
-        score = runwayEval.score > 0 ? runwayEval.score - 1 : runwayEval.score + 1;
-      } else if (depth <= 1) {
-        score = evaluateAny(game, weights);
-      } else {
-        score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1);
-      }
-      if (repCount === 2) {
-        score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
-      }
-    }
-
-    game.unmakeMove();
-
-    // Instant win cutoff: always play immediate decisive touchdowns
-    if (isMaximizing && score >= WIN_SCORE - 100) {
-      return { bestMove: move, score };
-    }
-    if (!isMaximizing && score <= LOSS_SCORE + 100) {
-      return { bestMove: move, score };
-    }
-
-    scoredMoves.push({ move, score });
-  }
-
-  // If activeTemp is 0 (or near 0), perform exact greedy argmax
-  if (activeTemp <= 0.001) {
-    let bestMove = scoredMoves[0].move;
-    let bestScore = scoredMoves[0].score;
-
-    for (let i = 1; i < scoredMoves.length; i++) {
-      if (isMaximizing) {
-        if (scoredMoves[i].score > bestScore) {
-          bestScore = scoredMoves[i].score;
-          bestMove = scoredMoves[i].move;
-        }
-      } else {
-        if (scoredMoves[i].score < bestScore) {
-          bestScore = scoredMoves[i].score;
-          bestMove = scoredMoves[i].move;
-        }
-      }
-    }
-    return { bestMove, score: bestScore };
-  }
-
-  // AlphaZero Softmax Policy Calculation
-  const bestScore = isMaximizing
-    ? Math.max(...scoredMoves.map((m) => m.score))
-    : Math.min(...scoredMoves.map((m) => m.score));
-
-  // Compute base Softmax distribution
-  const baseProbs = scoredMoves.map((m) => {
-    const delta = isMaximizing
-      ? (m.score - bestScore) / activeTemp
-      : (bestScore - m.score) / activeTemp;
+  const bestScore = candidates[0].score;
+  const baseProbs = candidates.map((candidate) => {
+    const delta = maximizing
+      ? (candidate.score - bestScore) / Math.max(0.001, temperature)
+      : (bestScore - candidate.score) / Math.max(0.001, temperature);
     return Math.exp(Math.max(-30, delta));
   });
+  const sumBase = baseProbs.reduce((sum, value) => sum + value, 0);
+  let probabilities = baseProbs.map((value) => sumBase > 0 ? value / sumBase : 1 / baseProbs.length);
 
-  const sumBase = baseProbs.reduce((acc, p) => acc + p, 0);
-  let finalProbs = baseProbs.map((p) => (sumBase > 0 ? p / sumBase : 1 / baseProbs.length));
-
-  // Blend Dirichlet root noise (if activeNoise > 0, e.g. 0.25 in self-play training)
-  if (activeNoise > 0) {
-    const alpha = 0.3; // AlphaZero parameter for game branching
-    const gammas = scoredMoves.map(() => sampleGamma(alpha));
-    const sumGamma = gammas.reduce((acc, g) => acc + g, 0);
-    const noiseVector = gammas.map((g) => (sumGamma > 0 ? g / sumGamma : 1 / gammas.length));
-
-    finalProbs = finalProbs.map(
-      (p, idx) => (1 - activeNoise) * p + activeNoise * noiseVector[idx]
+  if (rootNoise > 0) {
+    const gammas = candidates.map(() => sampleGamma(0.3, rng));
+    const sumGamma = gammas.reduce((sum, value) => sum + value, 0);
+    const noise = gammas.map((value) => sumGamma > 0 ? value / sumGamma : 1 / gammas.length);
+    probabilities = probabilities.map((value, index) =>
+      (1 - rootNoise) * value + rootNoise * noise[index]
     );
   }
 
-  // Sample move from final distribution
-  const r = Math.random();
+  const random = rng();
   let cumulative = 0;
-  let selectedIndex = 0;
-
-  for (let i = 0; i < finalProbs.length; i++) {
-    cumulative += finalProbs[i];
-    if (r <= cumulative) {
-      selectedIndex = i;
-      break;
-    }
+  for (let i = 0; i < probabilities.length; i++) {
+    cumulative += probabilities[i];
+    if (random <= cumulative) return candidates[i];
   }
+  return candidates[candidates.length - 1];
+}
 
+function fallbackResult(
+  game: IntransitiveGame,
+  weights: EvaluationWeights | NNUEWeights,
+  context: SearchContext,
+  reason: SearchStopReason
+): SearchResult {
+  const moves = game.generateLegalMoves();
+  orderMovesTactically(moves, game.activePlayer);
+  const bestMove = moves[0] ?? null;
   return {
-    bestMove: scoredMoves[selectedIndex].move,
-    score: scoredMoves[selectedIndex].score,
+    bestMove,
+    score: evaluateAny(game, weights),
+    completedDepth: 0,
+    nodes: context.nodes,
+    elapsedMs: Math.max(0, performance.now() - context.startedAt),
+    pv: bestMove ? [bestMove] : [],
+    stopReason: reason,
+    scoreKind: 'static',
   };
 }
 
-/**
- * Selects a move for the active player.
- * Supports fixed depth (number or { depth }) or time-budgeted iterative deepening ({ thinkTimeSec } / { thinkTimeMs }).
- */
+function selectMoveFixedDepth(
+  game: IntransitiveGame,
+  weights: EvaluationWeights | NNUEWeights,
+  optionsOrDepth: number | SelectMoveOptions,
+  legacyEpsilon: number,
+  context?: SearchContext
+): SearchResult {
+  const options: SelectMoveOptions = typeof optionsOrDepth === 'number'
+    ? { depth: optionsOrDepth }
+    : optionsOrDepth;
+  const depth = Math.max(1, Math.floor(options.depth ?? 1));
+  const searchContext = context ?? createSearchContext({ shouldStop: options.shouldStop });
+  const rng = options.rng ?? Math.random;
+  let temperature = options.temperature ?? 0;
+  const rootNoise = options.rootNoise ?? 0;
+  if (typeof optionsOrDepth === 'number' && legacyEpsilon > 0 && rng() < legacyEpsilon) {
+    temperature = 25;
+  }
+
+  const openingPlies = options.openingPlies;
+  const activePly = options.ply ?? 0;
+  const isOpening = openingPlies === undefined ? true : activePly < openingPlies;
+  const activeTemperature = isOpening ? temperature : 0;
+  const activeRootNoise = isOpening ? rootNoise : 0;
+
+  let root: RootDepthResult;
+  try {
+    root = rootSearchDepth(game, weights, depth, searchContext);
+  } catch (error) {
+    if (isSearchAbort(error)) {
+      if (context) throw error;
+      return fallbackResult(game, weights, searchContext, error.reason);
+    }
+    throw error;
+  }
+
+  if (root.candidates.length === 0) {
+    return {
+      bestMove: null,
+      score: terminalScore(game, 0) ?? evaluateAny(game, weights),
+      completedDepth: depth,
+      nodes: searchContext.nodes,
+      elapsedMs: Math.max(0, performance.now() - searchContext.startedAt),
+      pv: [],
+      stopReason: 'depth',
+      scoreKind: 'exact',
+    };
+  }
+
+  const selected = movePolicyChoice(
+    root.candidates,
+    game.activePlayer === PLAYER_BLUE,
+    activeTemperature,
+    activeRootNoise,
+    rng
+  );
+  return {
+    bestMove: selected.move,
+    score: selected.score,
+    completedDepth: depth,
+    nodes: searchContext.nodes,
+    elapsedMs: Math.max(0, performance.now() - searchContext.startedAt),
+    pv: selected.pv,
+    stopReason: 'depth',
+    scoreKind: 'exact',
+  };
+}
+
+function limitFromOptions(options: SelectMoveOptions): SearchLimit | null {
+  if (options.limit) return options.limit;
+  if (options.thinkTimeSec !== undefined && options.thinkTimeSec > 0) {
+    return { kind: 'time', timeMs: options.thinkTimeSec * 1000 };
+  }
+  if (options.thinkTimeMs !== undefined && options.thinkTimeMs > 0) {
+    return { kind: 'time', timeMs: options.thinkTimeMs };
+  }
+  return null;
+}
+
+/** Select a move using fixed depth or a mutually-exclusive time/node limit. */
 export function selectMove(
   game: IntransitiveGame,
   weights: EvaluationWeights | NNUEWeights,
   optionsOrDepth: number | SelectMoveOptions = 1,
-  legacyEpsilon: number = 0.0
+  legacyEpsilon: number = 0
 ): SearchResult {
-  // If time budget is specified, run iterative deepening up to allotted time
-  if (
-    typeof optionsOrDepth === 'object' &&
-    ((optionsOrDepth.thinkTimeSec && optionsOrDepth.thinkTimeSec > 0) ||
-      (optionsOrDepth.thinkTimeMs && optionsOrDepth.thinkTimeMs > 0))
-  ) {
-    const timeLimitMs =
-      (optionsOrDepth.thinkTimeSec ? optionsOrDepth.thinkTimeSec * 1000 : optionsOrDepth.thinkTimeMs) ??
-      1000;
-    const startTime = performance.now();
-    const maxSearchDepth = optionsOrDepth.depth ?? 6;
-    let bestResult: SearchResult = { bestMove: null, score: evaluateAny(game, weights) };
-
-    for (let d = 1; d <= maxSearchDepth; d++) {
-      const singleDepthOpts: SelectMoveOptions = {
-        ...optionsOrDepth,
-        depth: d,
-        thinkTimeSec: undefined,
-        thinkTimeMs: undefined,
-      };
-      const res = selectMoveFixedDepth(game, weights, singleDepthOpts, legacyEpsilon);
-      if (res.bestMove) {
-        bestResult = res;
-      }
-
-      // If decisive touchdown or forced mate is found, exit immediately
-      if (Math.abs(res.score) >= WIN_SCORE - 100) {
-        break;
-      }
-
-      const elapsed = performance.now() - startTime;
-      // If we've consumed >= 60% of budget or are within 30ms of the limit, the next depth will overshoot
-      if (elapsed >= timeLimitMs * 0.6 || elapsed >= timeLimitMs - 30) {
-        break;
-      }
-    }
-
-    return bestResult;
+  if (typeof optionsOrDepth === 'number') {
+    return selectMoveFixedDepth(game, weights, optionsOrDepth, legacyEpsilon);
   }
 
-  // Default: Direct fixed-depth search
-  return selectMoveFixedDepth(game, weights, optionsOrDepth, legacyEpsilon);
+  const options = optionsOrDepth;
+  const limit = limitFromOptions(options);
+  if (!limit || limit.kind === 'depth') {
+    return selectMoveFixedDepth(
+      game,
+      weights,
+      { ...options, depth: limit?.kind === 'depth' ? limit.depth : options.depth },
+      legacyEpsilon
+    );
+  }
+
+  const startedAt = performance.now();
+  const normalizedLimit = limit.kind === 'nodes'
+    ? { kind: 'nodes' as const, nodes: Math.max(1, Math.floor(limit.nodes)) }
+    : { kind: 'time' as const, timeMs: Math.max(1, limit.timeMs) };
+  const context = createSearchContext(
+    normalizedLimit.kind === 'nodes'
+      ? { nodeLimit: normalizedLimit.nodes, shouldStop: options.shouldStop }
+      : { deadlineMs: startedAt + normalizedLimit.timeMs, shouldStop: options.shouldStop }
+  );
+  const maxDepth = Math.max(1, Math.min(MAX_SEARCH_DEPTH, Math.floor(options.maxDepth ?? MAX_SEARCH_DEPTH)));
+  const legalMoves = game.generateLegalMoves();
+  if (legalMoves.length === 0) return fallbackResult(game, weights, context, 'fallback');
+
+  let best: SearchResult | null = null;
+  let stopReason: SearchStopReason = 'depth';
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    try {
+      const result = selectMoveFixedDepth(
+        game,
+        weights,
+        { ...options, depth, thinkTimeSec: undefined, thinkTimeMs: undefined, limit: undefined },
+        legacyEpsilon,
+        context
+      );
+      if (result.bestMove) best = result;
+    } catch (error) {
+      if (!isSearchAbort(error)) throw error;
+      stopReason = error.reason;
+      break;
+    }
+  }
+
+  if (!best) {
+    return fallbackResult(game, weights, context, stopReason === 'depth' ? 'fallback' : stopReason);
+  }
+
+  const reachedDepthCeiling = best.completedDepth >= maxDepth;
+  stopReason = reachedDepthCeiling
+    ? 'depth'
+    : (stopReason === 'depth'
+      ? normalizedLimit.kind === 'nodes' ? 'node-budget' : 'time-budget'
+      : stopReason);
+  return {
+    ...best,
+    nodes: context.nodes,
+    elapsedMs: Math.max(0, performance.now() - context.startedAt),
+    stopReason,
+    scoreKind: stopReason === 'depth' ? 'exact' : 'partial',
+  };
 }
 
-/**
- * Samples a Gamma(alpha, 1) random variable using Marsaglia and Tsang method.
- * Used for generating exact Dirichlet distributions.
- */
-function sampleGamma(alpha: number): number {
+function sampleGamma(alpha: number, rng: () => number): number {
   if (alpha < 1) {
-    const u = Math.max(1e-10, Math.random());
-    return sampleGamma(alpha + 1) * Math.pow(u, 1 / alpha);
+    const u = Math.max(1e-10, rng());
+    return sampleGamma(alpha + 1, rng) * Math.pow(u, 1 / alpha);
   }
   const d = alpha - 1 / 3;
   const c = 1 / Math.sqrt(9 * d);
   for (let iter = 0; iter < 100; iter++) {
-    const u1 = Math.max(1e-10, Math.random());
-    const u2 = Math.random();
-    const z = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+    const u1 = Math.max(1e-10, rng());
+    const u2 = rng();
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     const v = 1 + c * z;
     if (v <= 0) continue;
     const v3 = v * v * v;
-    const u = Math.random();
+    const u = rng();
     if (u < 1 - 0.0331 * z * z * z * z) return d * v3;
     if (Math.log(u) < 0.5 * z * z + d * (1 - v3 + Math.log(v3))) return d * v3;
   }
-  return 1.0;
+  return 1;
 }
 
-/**
- * Extracts a continuation line (Principal Variation) of up to `maxPlies` subsequent moves.
- * Alternates between players picking their best evaluated response.
- */
-function extractPVContinuation(
-  game: IntransitiveGame,
-  weights: EvaluationWeights | NNUEWeights,
-  maxPlies: number = 5
-): string[] {
-  const pv: string[] = [];
-  let unmakeCount = 0;
-
-  for (let step = 0; step < maxPlies; step++) {
-    const term = game.isTerminal();
-    if (term.isOver) break;
-
-    const replies = game.generateLegalMoves();
-    if (replies.length === 0) break;
-
-    const isBlue = game.activePlayer === PLAYER_BLUE;
-    let bestReply: Move | null = null;
-    let bestScore = isBlue ? -Infinity : Infinity;
-
-    for (let j = 0; j < replies.length; j++) {
-      const reply = replies[j];
-      game.makeMove(reply);
-      const score = evaluateAny(game, weights);
-      game.unmakeMove();
-
-      if (isBlue) {
-        if (score > bestScore) {
-          bestScore = score;
-          bestReply = reply;
-        }
-      } else {
-        if (score < bestScore) {
-          bestScore = score;
-          bestReply = reply;
-        }
-      }
+function formatPVContinuation(game: IntransitiveGame, pv: Move[]): string[] {
+  if (pv.length <= 1) return [];
+  let made = 0;
+  const result: string[] = [];
+  try {
+    if (!game.makeMove(pv[0])) return result;
+    made++;
+    for (let i = 1; i < pv.length; i++) {
+      if (game.isTerminal().isOver) break;
+      const legal = game.generateLegalMoves().find((move) => sameMove(move, pv[i]));
+      if (!legal) break;
+      result.push(game.formatMoveSAN(legal));
+      if (!game.makeMove(legal)) break;
+      made++;
     }
-
-    if (!bestReply) break;
-
-    const san = game.formatMoveSAN(bestReply);
-    pv.push(san);
-    game.makeMove(bestReply);
-    unmakeCount++;
+    return result;
+  } finally {
+    while (made > 0) {
+      game.unmakeMove();
+      made--;
+    }
   }
-
-  for (let k = 0; k < unmakeCount; k++) {
-    game.unmakeMove();
-  }
-
-  return pv;
 }
 
-/**
- * Computes top N candidate moves for the current position, sorted from best to worst.
- * Supports 1 to 5 moves with scores, SAN notation, tactical tags, and up to 5-move PV lines.
- */
+function candidateMetadata(game: IntransitiveGame, candidate: RootCandidate): RankedMove {
+  const san = game.formatMoveSAN(candidate.move);
+  const mateThreshold = WIN_SCORE - 100;
+  const isMate = candidate.forced && Math.abs(candidate.score) >= mateThreshold;
+  const mateInPlies = isMate
+    ? Math.max(1, candidate.score > 0 ? WIN_SCORE - candidate.score : candidate.score - LOSS_SCORE)
+    : undefined;
+  let threat: string | undefined;
+  if (san.includes('#')) threat = 'Touchdown Goal';
+  else if (isMate) {
+    const movesToMate = Math.max(1, Math.ceil((mateInPlies ?? 1) / 2));
+    const isWinningMate = game.activePlayer === PLAYER_BLUE ? candidate.score > 0 : candidate.score < 0;
+    threat = isWinningMate ? `🏆 Forced Win (M${movesToMate})` : `❌ Forced Loss (-M${movesToMate})`;
+  } else if (candidate.move.captured) {
+    threat = `Capture ${candidate.move.captured}`;
+  }
+  return {
+    move: candidate.move,
+    rank: 0,
+    score: candidate.score,
+    san,
+    threat,
+    pv: formatPVContinuation(game, candidate.pv),
+    isMate,
+    mateInPlies,
+  };
+}
+
+/** Compute top candidates at one fully completed depth. */
 export function getTopMoves(
   game: IntransitiveGame,
   weights: EvaluationWeights | NNUEWeights,
   count: number = 5,
   depth: number = 1,
-  context?: { nodes: number },
+  contextInput?: SearchContextInput,
   isAborted?: () => boolean
 ): RankedMove[] {
-  const moves = game.generateLegalMoves();
-  if (moves.length === 0) return [];
-
-  const isMaximizing = game.activePlayer === PLAYER_BLUE;
-
-  // Root move ordering: prioritize touchdown wins, runner threats (dist 1 & 2), captures, and goal proximity
-  if (moves.length > 1) {
-    orderMovesTactically(moves, game.activePlayer);
-  }
-
-  const scoredMoves: Array<{
-    move: Move;
-    score: number;
-    san: string;
-    threat?: string;
-    isMate: boolean;
-    mateInPlies?: number;
-  }> = [];
-
-  let hasDecisiveMate = false;
-
-  for (let i = 0; i < moves.length; i++) {
-    if (isAborted && isAborted()) break;
-
-    const move = moves[i];
-    const san = game.formatMoveSAN(move);
-    game.makeMove(move);
-
-    let score: number;
-    const term = game.isTerminal();
-    const repCount = game.getRepetitionCount();
-
-    if (term.isOver) {
-      if (context) context.nodes++;
-      if (term.winner === PLAYER_BLUE) {
-        score = WIN_SCORE - 1;
-      } else if (term.winner === PLAYER_RED) {
-        score = LOSS_SCORE + 1;
-      } else {
-        score = isMaximizing ? -DRAW_CONTEMPT_FACTOR : DRAW_CONTEMPT_FACTOR;
-      }
-    } else {
-      const runwayEval = evaluateRunwayRace(game);
-      if (runwayEval) {
-        if (context) context.nodes++;
-        score = runwayEval.score > 0 ? runwayEval.score - 1 : runwayEval.score + 1;
-      } else if (hasDecisiveMate && i >= count) {
-        if (context) context.nodes++;
-        score = evaluateAny(game, weights);
-      } else if (depth <= 1) {
-        if (context) context.nodes++;
-        score = evaluateAny(game, weights);
-        if (repCount === 2) {
-          score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
-        }
-      } else {
-        score = minimax(game, depth - 1, -Infinity, Infinity, weights, 1, context);
-        if (repCount === 2) {
-          score += isMaximizing ? -REPETITION_PENALTY_2FOLD : REPETITION_PENALTY_2FOLD;
-        }
-      }
-    }
-
-    game.unmakeMove();
-
-    // Mate / Touchdown detection
-    const MATE_THRESHOLD = WIN_SCORE - 100;
-    const isMate = Math.abs(score) >= MATE_THRESHOLD;
-    if (isMate && ((isMaximizing && score > 0) || (!isMaximizing && score < 0))) {
-      hasDecisiveMate = true;
-    }
-    let mateInPlies: number | undefined;
-    if (isMate) {
-      if (score > 0) {
-        mateInPlies = WIN_SCORE - score;
-      } else {
-        mateInPlies = score - LOSS_SCORE;
-      }
-      if (mateInPlies <= 0) mateInPlies = 1;
-    }
-
-    // Generate accurate tactical & touchdown descriptor
-    let threat: string | undefined;
-    if (san.includes('#')) {
-      threat = 'Touchdown Goal';
-    } else if (term.isOver && term.winner === 'draw') {
-      threat = 'Draw (Repetition/50M)';
-    } else if (isMate) {
-      const movesToMate = Math.max(1, Math.ceil((mateInPlies ?? 1) / 2));
-      const isWinningMate = (isMaximizing && score > 0) || (!isMaximizing && score < 0);
-      threat = isWinningMate ? `🏆 Forced Win (M${movesToMate})` : `❌ Forced Loss (-M${movesToMate})`;
-    } else if (move.captured) {
-      threat = `Capture ${move.captured}`;
-    }
-
-    scoredMoves.push({ move, score, san, threat, isMate, mateInPlies });
-  }
-
-  // Sort best to worst based on active player
-  if (isMaximizing) {
-    scoredMoves.sort((a, b) => b.score - a.score);
-  } else {
-    scoredMoves.sort((a, b) => a.score - b.score);
-  }
-
-  const limit = Math.min(count, scoredMoves.length);
+  const context = normalizeContext(contextInput, isAborted);
+  const root = rootSearchDepth(game, weights, Math.max(1, Math.floor(depth)), context);
   const result: RankedMove[] = [];
-  for (let i = 0; i < limit; i++) {
-    if (isAborted && isAborted()) break;
-    const item = scoredMoves[i];
-
-    // Compute continuation line only for the top candidate moves
-    game.makeMove(item.move);
-    const pv = extractPVContinuation(game, weights, 5);
-    game.unmakeMove();
-
-    result.push({
-      move: item.move,
-      rank: i + 1,
-      score: item.score,
-      san: item.san,
-      threat: item.threat,
-      pv,
-      isMate: item.isMate,
-      mateInPlies: item.mateInPlies,
-    });
+  for (let i = 0; i < Math.min(Math.max(0, count), root.candidates.length); i++) {
+    if (isAborted?.()) throw new SearchAbort('aborted');
+    const item = candidateMetadata(game, root.candidates[i]);
+    item.rank = i + 1;
+    result.push(item);
   }
-
   return result;
 }
 
@@ -748,10 +679,6 @@ export interface AnalysisStepResult {
   isComplete: boolean;
 }
 
-/**
- * Runs an asynchronous or progressive iterative deepening search from Depth 1 to maxDepth.
- * Streams intermediate results after each depth, and stops early on forced mate or cancellation.
- */
 export function runIterativeDeepeningAnalysis(
   game: IntransitiveGame,
   weights: EvaluationWeights | NNUEWeights,
@@ -760,53 +687,46 @@ export function runIterativeDeepeningAnalysis(
   onProgress?: (result: AnalysisStepResult) => void,
   shouldStop?: () => boolean
 ): AnalysisStepResult {
-  const startTime = performance.now();
-  const context = { nodes: 0 };
+  const boundedMaxDepth = Math.max(1, Math.min(MAX_SEARCH_DEPTH, Math.floor(maxDepth)));
+  const context = createSearchContext({ shouldStop });
   let lastResult: RankedMove[] = [];
-  let achievedDepth = 1;
+  let achievedDepth = 0;
+  let interrupted = false;
 
-  for (let d = 1; d <= maxDepth; d++) {
-    if (shouldStop && shouldStop()) break;
+  for (let depth = 1; depth <= boundedMaxDepth; depth++) {
+    if (shouldStop?.()) {
+      interrupted = true;
+      break;
+    }
+    try {
+      lastResult = getTopMoves(game, weights, count, depth, context);
+      achievedDepth = depth;
+    } catch (error) {
+      if (!isSearchAbort(error)) throw error;
+      interrupted = true;
+      break;
+    }
 
-    const moves = getTopMoves(game, weights, count, d, context);
-    lastResult = moves;
-    achievedDepth = d;
-
-    const elapsedMs = Math.max(1, performance.now() - startTime);
-    const nps = Math.round((context.nodes * 1000) / elapsedMs);
-    const isDone = d === maxDepth;
-
-    const stepResult: AnalysisStepResult = {
-      depth: d,
-      maxDepth,
+    const elapsedMs = Math.max(1, performance.now() - context.startedAt);
+    onProgress?.({
+      depth,
+      maxDepth: boundedMaxDepth,
       nodes: context.nodes,
-      nps,
+      nps: Math.round((context.nodes * 1000) / elapsedMs),
       timeMs: Math.round(elapsedMs),
       candidateMoves: lastResult,
-      isComplete: isDone,
-    };
-
-    if (onProgress) {
-      onProgress(stepResult);
-    }
-
-    // Early termination: if top candidate move is a forced mate / touchdown fully resolved
-    if (lastResult.length > 0 && lastResult[0].isMate) {
-      const pliesNeeded = lastResult[0].mateInPlies ?? 99;
-      if (pliesNeeded <= d) {
-        break;
-      }
-    }
+      isComplete: depth === boundedMaxDepth,
+    });
   }
 
-  const totalElapsed = Math.max(1, performance.now() - startTime);
+  const elapsedMs = Math.max(1, performance.now() - context.startedAt);
   return {
     depth: achievedDepth,
-    maxDepth,
+    maxDepth: boundedMaxDepth,
     nodes: context.nodes,
-    nps: Math.round((context.nodes * 1000) / totalElapsed),
-    timeMs: Math.round(totalElapsed),
+    nps: Math.round((context.nodes * 1000) / elapsedMs),
+    timeMs: Math.round(elapsedMs),
     candidateMoves: lastResult,
-    isComplete: true,
+    isComplete: !interrupted && achievedDepth >= boundedMaxDepth,
   };
 }

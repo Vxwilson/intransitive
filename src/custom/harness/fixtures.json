@@ -1,0 +1,118 @@
+[
+  {
+    "id": "start",
+    "category": "start",
+    "description": "Official initial position.",
+    "fen": "9/4pr3/4spr2/5spr1/1PS3sp1/1RPS5/2RPS4/3RP4/9 b 0 1",
+    "provenance": "Repository INITIAL_INTRANSITIVE_FEN; objective labels intentionally omitted."
+  },
+  {
+    "id": "developed-center",
+    "category": "developed",
+    "description": "Sparse developed position with both sides contesting the center.",
+    "fen": "9/9/3S5/4R4/4p4/5r3/9/9/9 b 0 1",
+    "provenance": "Hand-constructed diagnostic position; not an objectively labeled best-move position."
+  },
+  {
+    "id": "capture-scissors-paper",
+    "category": "capture",
+    "description": "Blue Scissors can capture an adjacent Red Paper.",
+    "fen": "9/9/9/9/4Sp3/9/9/9/7r1 b 0 1",
+    "provenance": "Hand-constructed RPS capture motif; objective move labels intentionally omitted."
+  },
+  {
+    "id": "capture-red-response",
+    "category": "capture",
+    "description": "Red Scissors is adjacent to a Blue Paper and can capture it.",
+    "fen": "9/9/9/9/4sP3/9/9/7R1/7r1 r 0 1",
+    "provenance": "Hand-constructed reciprocal capture motif; objective move labels intentionally omitted."
+  },
+  {
+    "id": "blue-goal-attack",
+    "category": "goal-attack",
+    "description": "Blue has a runner one step from the i9 goal.",
+    "fen": "9/7P1/9/9/9/9/9/r8/9 b 0 1",
+    "provenance": "Hand-constructed goal-race position; objective move labels intentionally omitted."
+  },
+  {
+    "id": "red-goal-attack",
+    "category": "goal-attack",
+    "description": "Red has a runner one step from the a1 goal.",
+    "fen": "9/9/9/9/9/9/9/1p5R1/9 r 0 1",
+    "provenance": "Hand-constructed goal-race position; objective move labels intentionally omitted."
+  },
+  {
+    "id": "blocked-route",
+    "category": "blocked-route",
+    "description": "Mixed friendly and hostile pieces constrain several central routes.",
+    "fen": "9/9/9/9/9/9/1rPp5/1S1s5/9 b 0 1",
+    "provenance": "Hand-constructed route-blocking position; objective move labels intentionally omitted."
+  },
+  {
+    "id": "low-material",
+    "category": "low-material",
+    "description": "One Rock per side in an open board position.",
+    "fen": "9/9/9/9/4R4/9/9/3r5/9 b 2 7",
+    "provenance": "Hand-constructed low-material position with nonzero clock; objective labels omitted."
+  },
+  {
+    "id": "repetition-threefold",
+    "category": "repetition",
+    "description": "The board is at a threefold repetition only after replaying the supplied history.",
+    "fen": "9/9/9/9/4R4/9/9/3r5/9 b 8 5",
+    "startFen": "9/9/9/9/4R4/9/9/3r5/9 b 0 1",
+    "history": [
+      { "from": 40, "to": 39, "piece": "R" },
+      { "from": 12, "to": 11, "piece": "R" },
+      { "from": 39, "to": 40, "piece": "R" },
+      { "from": 11, "to": 12, "piece": "R" },
+      { "from": 40, "to": 39, "piece": "R" },
+      { "from": 12, "to": 11, "piece": "R" },
+      { "from": 39, "to": 40, "piece": "R" },
+      { "from": 11, "to": 12, "piece": "R" }
+    ],
+    "provenance": "Constructed by legal repetition from the supplied sparse start FEN; history is required to restore the threefold state."
+  },
+  {
+    "id": "near-halfmove-limit",
+    "category": "halfmove-limit",
+    "description": "Nonterminal position one halfmove before the 50-move draw rule.",
+    "fen": "9/9/9/9/4R4/9/9/3r5/9 b 99 50",
+    "provenance": "Hand-constructed rule-boundary position; the clock is intentionally near the draw threshold."
+  },
+  {
+    "id": "near-halfmove-capture-reset",
+    "category": "halfmove-limit",
+    "description": "Near the halfmove limit with an available Scissors-on-Paper capture.",
+    "fen": "9/9/9/9/4Sp3/9/9/3r5/9 b 99 50",
+    "provenance": "Hand-constructed clock-reset diagnostic; objective move labels intentionally omitted."
+  },
+  {
+    "id": "red-to-move-capture",
+    "category": "side-to-move",
+    "description": "Red to move with a Paper adjacent to a Blue Rock.",
+    "fen": "9/9/9/9/4pR3/9/9/3S5/9 r 12 9",
+    "provenance": "Hand-constructed Red-perspective capture motif; objective move labels intentionally omitted."
+  },
+  {
+    "id": "blocked-blue-goal",
+    "category": "goal-defense",
+    "description": "Blue runner is adjacent to i9, but the goal square is occupied by an opposing Scissors.",
+    "fen": "8s/7P1/9/9/9/9/9/r8/9 b 0 1",
+    "provenance": "Hand-constructed goal-blocking defense; objective move labels intentionally omitted."
+  },
+  {
+    "id": "short-runner-race",
+    "category": "goal-race",
+    "description": "Blue Rock is two king-steps from i9 while Red has a distant blocker.",
+    "fen": "9/9/6R2/9/4r4/9/9/9/9 b 0 1",
+    "provenance": "Existing engine regression position; included as a tactical race fixture without treating its expected move as a label."
+  },
+  {
+    "id": "sparse-crossfire",
+    "category": "blocked-route",
+    "description": "A compact central crossfire with opposing pieces limiting direct routes.",
+    "fen": "9/9/9/9/4R4/3r5/3sP4/3S5/9 b 0 1",
+    "provenance": "Hand-constructed central crossfire; objective move labels intentionally omitted."
+  }
+]

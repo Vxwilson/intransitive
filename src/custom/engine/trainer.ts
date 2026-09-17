@@ -436,14 +436,15 @@ export class SelfPlayTrainer {
       const currentDepth = isTurnA ? depthA : depthB;
       const currentThinkTime = isTurnA ? thinkTimeSecA : thinkTimeSecB;
 
-      // AlphaZero Tournament schedule: T = 15 cp for first 4 plies, then T = 0 greedy
+      // Competitive arena play is deterministic greedy best-move mode. The
+      // self-play trainer owns exploration; arena results must not mix it in.
       const { bestMove } = selectMove(game, currentWeights, {
         depth: currentDepth,
         thinkTimeSec: currentThinkTime,
-        temperature: 15.0,
+        temperature: 0.0,
         rootNoise: 0.0,
         ply: plies,
-        openingPlies: 4,
+        openingPlies: 0,
       });
 
       if (!bestMove) break;

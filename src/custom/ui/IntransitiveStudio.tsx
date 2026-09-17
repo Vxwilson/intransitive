@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { generateGamePGN, generateTournamentPGN, downloadTextFile, replayPGN } from '../core/pgn';
 import { IntransitiveGame } from '../core/game';
+import { INITIAL_INTRANSITIVE_FEN } from '../core/fen';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import type { Move } from '../core/types';
 import { createZeroWeights, createHeuristicWeights } from '../engine/evaluator';
@@ -69,6 +70,17 @@ import { sounds } from '../../audio/soundEffects';
 import './intransitive.css';
 
 type StudioTab = 'arena' | 'turbo' | 'play' | 'settings';
+
+function workerHistory(
+  history: { move: Move; san: string; fen: string }[],
+  currentIndex: number,
+  startFen: string = INITIAL_INTRANSITIVE_FEN
+): { startFen: string; moves: Move[] } | undefined {
+  const moves = history
+    .slice(0, Math.max(0, currentIndex + 1))
+    .map((entry) => entry.move);
+  return moves.length > 0 ? { startFen, moves } : undefined;
+}
 
 const SETTINGS_KEY = 'chessesque_intransitive_settings_v1';
 
@@ -121,6 +133,7 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Arena Game State (isolated for Visual Arena exhibition & tournament simulations)
   const [arenaGame, setArenaGame] = useState<IntransitiveGame>(() => new IntransitiveGame());
+  const [arenaHistoryStartFen, setArenaHistoryStartFen] = useState<string>(INITIAL_INTRANSITIVE_FEN);
   const [arenaSelectedSquare, setArenaSelectedSquare] = useState<number | null>(null);
   const [arenaLastMove, setArenaLastMove] = useState<Move | null>(null);
   const [arenaMoveHistory, setArenaMoveHistory] = useState<{ move: Move; san: string; fen: string }[]>([]);
@@ -129,6 +142,7 @@ export const IntransitiveStudio: React.FC = () => {
 
   // Human Play Game State (completely isolated from Visual Arena)
   const [playGame, setPlayGame] = useState<IntransitiveGame>(() => new IntransitiveGame());
+  const [playHistoryStartFen, setPlayHistoryStartFen] = useState<string>(INITIAL_INTRANSITIVE_FEN);
   const [playSelectedSquare, setPlaySelectedSquare] = useState<number | null>(null);
   const [playLastMove, setPlayLastMove] = useState<Move | null>(null);
   const [playMoveHistory, setPlayMoveHistory] = useState<{ move: Move; san: string; fen: string }[]>([]);
@@ -178,6 +192,7 @@ export const IntransitiveStudio: React.FC = () => {
   const setActiveSelectedSquare = isPlayTab ? setPlaySelectedSquare : setArenaSelectedSquare;
   const activeLastMove = isPlayTab ? playLastMove : arenaLastMove;
   const activeMoveHistory = isPlayTab ? playMoveHistory : arenaMoveHistory;
+  const activeHistoryStartFen = isPlayTab ? playHistoryStartFen : arenaHistoryStartFen;
   const activeHistoryIndex = isPlayTab ? playHistoryIndex : arenaHistoryIndex;
   const activeIsBoardFlipped = isPlayTab ? playIsBoardFlipped : arenaIsBoardFlipped;
   const setActiveIsBoardFlipped = isPlayTab ? setPlayIsBoardFlipped : setArenaIsBoardFlipped;
@@ -609,6 +624,7 @@ export const IntransitiveStudio: React.FC = () => {
     worker.postMessage({
       type: 'START_ANALYSIS',
       currentFen,
+      history: workerHistory(activeMoveHistory, activeHistoryIndex, activeHistoryStartFen),
       weights: !isNNUE ? activeEvalModel.weights : undefined,
       nnueWeights: isNNUE && activeEvalModel.nnueWeights ? serializeWeights(activeEvalModel.nnueWeights) : undefined,
       maxDepth: analysisTargetDepth,
@@ -621,7 +637,7 @@ export const IntransitiveStudio: React.FC = () => {
         analysisWorkerRef.current = null;
       }
     };
-  }, [activeGame, activeTab, isAnalysisEnabled, isHumanTurn, activeEvalModel, analysisTargetDepth]);
+  }, [activeGame, activeMoveHistory, activeHistoryIndex, activeHistoryStartFen, activeTab, isAnalysisEnabled, isHumanTurn, activeEvalModel, analysisTargetDepth]);
 
   // Persist settings on change
   useEffect(() => {
@@ -924,6 +940,7 @@ export const IntransitiveStudio: React.FC = () => {
           currentZoomGameRef.current = lastNext.gameIndex;
           setArenaMoveHistory([]);
           setArenaHistoryIndex(-1);
+          setArenaHistoryStartFen(INITIAL_INTRANSITIVE_FEN);
         }
 
         if (lastNext.currentWinsA !== undefined || lastNext.totalGames !== undefined) {
@@ -1001,6 +1018,8 @@ export const IntransitiveStudio: React.FC = () => {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: arenaGame.toFEN(),
+          history: workerHistory(arenaMoveHistory, arenaHistoryIndex, arenaHistoryStartFen),
+          ply: arenaMoveHistory.length,
           searchDepth: activeDepth,
           customWeights: !isNNUE ? (fighterWeights as EvaluationWeights) : undefined,
           customNNUEWeights: isNNUE ? serializeWeights(fighterWeights as NNUEWeights) : undefined,
@@ -1011,7 +1030,7 @@ export const IntransitiveStudio: React.FC = () => {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPlayingLive, activeTab, arenaGame, delayMs, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
+  }, [isPlayingLive, activeTab, arenaGame, arenaMoveHistory, arenaHistoryIndex, arenaHistoryStartFen, delayMs, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
 
   const handleResetGame = useCallback(() => {
     if (analysisWorkerRef.current) {
@@ -1032,12 +1051,14 @@ export const IntransitiveStudio: React.FC = () => {
       setPlayLastMove(null);
       setPlayMoveHistory([]);
       setPlayHistoryIndex(-1);
+      setPlayHistoryStartFen(INITIAL_INTRANSITIVE_FEN);
     } else {
       setArenaGame(freshGame);
       setArenaSelectedSquare(null);
       setArenaLastMove(null);
       setArenaMoveHistory([]);
       setArenaHistoryIndex(-1);
+      setArenaHistoryStartFen(INITIAL_INTRANSITIVE_FEN);
     }
     setShowAccuracyView(true);
   }, []);
@@ -1085,13 +1106,15 @@ export const IntransitiveStudio: React.FC = () => {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: activeGame.toFEN(),
+          history: workerHistory(activeMoveHistory, activeHistoryIndex, activeHistoryStartFen),
+          ply: activeMoveHistory.length,
           searchDepth: activeDepth,
           customWeights: !isNNUE ? (watchWeights as EvaluationWeights) : undefined,
           customNNUEWeights: isNNUE ? serializeWeights(watchWeights as NNUEWeights) : undefined,
         });
       }
     }
-  }, [activeTab, playMoveHistory, arenaMoveHistory, playHistoryIndex, arenaHistoryIndex, handleSelectHistoryIndex, finalGameStatus.isOver, activeGame, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
+  }, [activeTab, playMoveHistory, arenaMoveHistory, playHistoryIndex, arenaHistoryIndex, activeMoveHistory, activeHistoryIndex, activeHistoryStartFen, handleSelectHistoryIndex, finalGameStatus.isOver, activeGame, fighterAId, fighterBId, fighterADepth, fighterBDepth, getWeightsById]);
 
   const handleStepBackward = useCallback(() => {
     setArenaViewMode('notation');
@@ -1129,6 +1152,7 @@ export const IntransitiveStudio: React.FC = () => {
     }
 
     const fenAfter = nextGame.toFEN();
+    const nextHistory = [...playMoveHistory, { move, san, fen: fenAfter }];
     setPlayGame(nextGame);
     setPlayLastMove(move);
     setPlaySelectedSquare(null);
@@ -1150,6 +1174,8 @@ export const IntransitiveStudio: React.FC = () => {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: fenAfter,
+          history: workerHistory(nextHistory, nextHistory.length - 1, playHistoryStartFen),
+          ply: nextHistory.length,
           searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
           thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
           customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
@@ -1157,7 +1183,7 @@ export const IntransitiveStudio: React.FC = () => {
         });
       }
     }
-  }, [playGame, soundEnabled, activeTab, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
+  }, [playGame, playMoveHistory, playHistoryStartFen, soundEnabled, activeTab, selectedOpponentId, playOpponentMode, playOpponentDepth, playOpponentTimeSec, getWeightsById]);
 
   // Start a fresh Human Game
   const handleStartHumanGame = useCallback((color: 'blue' | 'red', opponentId: string) => {
@@ -1175,6 +1201,7 @@ export const IntransitiveStudio: React.FC = () => {
     setPlayLastMove(null);
     setPlayMoveHistory([]);
     setPlayHistoryIndex(-1);
+    setPlayHistoryStartFen(INITIAL_INTRANSITIVE_FEN);
 
     // Auto-adjust board flip if human plays Red
     if (color === 'red') {
@@ -1186,6 +1213,7 @@ export const IntransitiveStudio: React.FC = () => {
         workerRef.current.postMessage({
           type: 'STEP_LIVE',
           currentFen: freshGame.toFEN(),
+          ply: 0,
           searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
           thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
           customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
@@ -1348,6 +1376,7 @@ export const IntransitiveStudio: React.FC = () => {
         setPlayLastMove(null);
         setPlayMoveHistory([]);
         setPlayHistoryIndex(-1);
+        setPlayHistoryStartFen(trimmed);
 
         // Trigger opponent AI move if it's the AI's turn
         const isHuman = selectedOpponentId === 'manual' ||
@@ -1361,6 +1390,7 @@ export const IntransitiveStudio: React.FC = () => {
             workerRef.current.postMessage({
               type: 'STEP_LIVE',
               currentFen: testGame.toFEN(),
+              ply: 0,
               searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
               thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
               customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
@@ -1374,6 +1404,7 @@ export const IntransitiveStudio: React.FC = () => {
         setArenaLastMove(null);
         setArenaMoveHistory([]);
         setArenaHistoryIndex(-1);
+        setArenaHistoryStartFen(trimmed);
       }
 
       setFenError(null);
@@ -1406,6 +1437,7 @@ export const IntransitiveStudio: React.FC = () => {
         setPlayLastMove(lastMove);
         setPlayMoveHistory(result.moves);
         setPlayHistoryIndex(result.moves.length - 1);
+        setPlayHistoryStartFen(result.startFen ?? INITIAL_INTRANSITIVE_FEN);
 
         // Trigger opponent AI move if it's the AI's turn
         const isHuman = selectedOpponentId === 'manual' ||
@@ -1419,6 +1451,11 @@ export const IntransitiveStudio: React.FC = () => {
             workerRef.current.postMessage({
               type: 'STEP_LIVE',
               currentFen: result.finalGame.toFEN(),
+              history: {
+                startFen: result.startFen ?? INITIAL_INTRANSITIVE_FEN,
+                moves: result.moves.map((entry) => entry.move),
+              },
+              ply: result.moves.length,
               searchDepth: playOpponentMode === 'depth' ? playOpponentDepth : undefined,
               thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
               customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
@@ -1432,6 +1469,7 @@ export const IntransitiveStudio: React.FC = () => {
         setArenaLastMove(lastMove);
         setArenaMoveHistory(result.moves);
         setArenaHistoryIndex(result.moves.length - 1);
+        setArenaHistoryStartFen(result.startFen ?? INITIAL_INTRANSITIVE_FEN);
       }
 
       setPgnError(null);
@@ -2290,7 +2328,7 @@ export const IntransitiveStudio: React.FC = () => {
                       : playOpponentMode === 'time'
                       ? `Computer is thinking (${playOpponentTimeSec}s)...`
                       : `Computer is thinking (Depth ${playOpponentDepth})...`
-                    : `${activeGame.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'} to move (Ply ${activeGame.halfmoveClock + 1})`}
+                    : `${activeGame.activePlayer === PLAYER_BLUE ? 'Blue' : 'Red'} to move (Ply ${activeMoveHistory.length + 1})`}
                 </span>
               </div>
 

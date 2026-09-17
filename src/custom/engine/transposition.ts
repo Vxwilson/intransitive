@@ -1,7 +1,7 @@
 /**
  * Transposition Table (TT) for Intransitive 9x9 Engine
- * Uses 64-bit Zobrist hash keys with depth-preferred replacement,
- * age tracking, and mate-distance normalization.
+ * Uses 64-bit Zobrist hash keys with depth-preferred replacement and age
+ * tracking. Package 1 search contexts use this table for move ordering only.
  */
 
 import type { Move } from '../core/types';
@@ -68,6 +68,32 @@ export class IntransitiveTT {
       ...entry,
       score,
     };
+  }
+
+  /**
+   * Store only a move-ordering hint. Search deliberately does not reuse the
+   * score, bound, or depth from this table: the board key does not encode the
+   * complete repetition path or every search extension context.
+   */
+  public storeMove(hash: bigint, depth: number, bestMove: Move | null): void {
+    if (!bestMove) return;
+
+    const idx = Number(hash & this.mask);
+    const existing = this.entries[idx];
+    if (
+      !existing ||
+      existing.age !== this.age ||
+      depth >= existing.depth
+    ) {
+      this.entries[idx] = {
+        hash,
+        depth,
+        score: 0,
+        flag: TTFlag.Exact,
+        bestMove,
+        age: this.age,
+      };
+    }
   }
 
   public store(

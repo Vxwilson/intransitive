@@ -4,7 +4,7 @@
  */
 
 import { IntransitiveGame } from '../core/game';
-import { getTopMoves } from './search';
+import { getTopMoves, isSearchAbort, MAX_SEARCH_DEPTH } from './search';
 import { deserializeWeights } from './nnue/featureTransformer';
 import { createHeuristicWeights } from './evaluator';
 import type { NNUEWeights } from './nnue/types';
@@ -30,14 +30,20 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         currentAnalysisId++;
         const thisId = currentAnalysisId;
         const targetFen = req.currentFen;
-        const game = new IntransitiveGame(targetFen);
+        const game = req.history
+          ? IntransitiveGame.fromHistory(req.history, targetFen)
+          : new IntransitiveGame(targetFen);
         const activeWeights: EvaluationWeights | NNUEWeights = req.nnueWeights
           ? deserializeWeights(req.nnueWeights)
           : (req.weights ?? createHeuristicWeights());
 
         const isInfinite = (req.maxDepth ?? 6) >= 99;
-        // Cap deep infinite analysis at Depth 6 (~45s limit) to ensure responsive worker turnaround
-        const maxDepth = isInfinite ? 6 : Math.min(6, req.maxDepth ?? 6);
+        // Infinite mode is iterative and yields between completed depths. The
+        // ceiling is a safety bound, not a claim that the requested depth was
+        // reached; STOP_ANALYSIS still terminates/recreates this worker in the UI.
+        const maxDepth = isInfinite
+          ? MAX_SEARCH_DEPTH
+          : Math.min(MAX_SEARCH_DEPTH, Math.max(1, req.maxDepth ?? 6));
         const count = req.count ?? 5;
         const startTime = performance.now();
         const context = { nodes: 0 };
@@ -48,7 +54,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           if (thisId !== currentAnalysisId) return;
 
           const isAborted = () => thisId !== currentAnalysisId;
-          const moves = getTopMoves(game, activeWeights, count, currentDepth, context, isAborted);
+          let moves: RankedMove[];
+          try {
+            moves = getTopMoves(game, activeWeights, count, currentDepth, context, isAborted);
+          } catch (error) {
+            if (isSearchAbort(error)) return;
+            throw error;
+          }
           if (thisId !== currentAnalysisId) return;
 
           lastResult = moves;
@@ -59,7 +71,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           post({
             type: isDone ? 'ANALYSIS_COMPLETE' : 'ANALYSIS_PROGRESS',
             depth: currentDepth,
-            maxDepth: isInfinite ? 99 : maxDepth,
+            maxDepth,
             nodes: context.nodes,
             nps,
             timeMs: Math.round(elapsedMs),
@@ -75,7 +87,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
                 post({
                   type: 'ANALYSIS_COMPLETE',
                   depth: currentDepth,
-                  maxDepth: isInfinite ? 99 : maxDepth,
+                  maxDepth,
                   nodes: context.nodes,
                   nps,
                   timeMs: Math.round(elapsedMs),
@@ -95,7 +107,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
             post({
               type: 'ANALYSIS_COMPLETE',
               depth: currentDepth - 1,
-              maxDepth: 99,
+              maxDepth,
               nodes: context.nodes,
               nps,
               timeMs: Math.round(elapsedMs),

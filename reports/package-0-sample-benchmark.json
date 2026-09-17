@@ -1,0 +1,96 @@
+{
+  "kind": "intransitive-search-benchmark-report",
+  "schemaVersion": 1,
+  "engineVersion": "package-0-harness-v1",
+  "modelId": "preset-master",
+  "limit": {
+    "kind": "depth",
+    "value": 1
+  },
+  "warmupRuns": 1,
+  "measuredRuns": 2,
+  "fixtures": [
+    {
+      "fixtureId": "start",
+      "engine": "reference",
+      "samples": 2,
+      "medianMs": 0.486,
+      "p95Ms": 0.576,
+      "maxMs": 0.576,
+      "medianNodes": 36,
+      "medianScore": -14,
+      "selectedMoves": [
+        "Rc3-c2"
+      ]
+    },
+    {
+      "fixtureId": "developed-center",
+      "engine": "reference",
+      "samples": 2,
+      "medianMs": 0.076,
+      "p95Ms": 0.077,
+      "maxMs": 0.077,
+      "medianNodes": 13,
+      "medianScore": 85,
+      "selectedMoves": [
+        "Re6-f7"
+      ]
+    }
+  ],
+  "overall": {
+    "medianMs": 0.236,
+    "p95Ms": 0.576,
+    "maxMs": 0.576,
+    "medianNodes": 25
+  },
+  "rawSamples": [
+    {
+      "fixtureId": "start",
+      "engine": "reference",
+      "repetition": 1,
+      "score": -14,
+      "selectedMove": "Rc3-c2",
+      "completedDepth": 1,
+      "nodes": 36,
+      "elapsedMs": 0.395,
+      "stopReason": "depth",
+      "scoreKind": "exact"
+    },
+    {
+      "fixtureId": "start",
+      "engine": "reference",
+      "repetition": 2,
+      "score": -14,
+      "selectedMove": "Rc3-c2",
+      "completedDepth": 1,
+      "nodes": 36,
+      "elapsedMs": 0.576,
+      "stopReason": "depth",
+      "scoreKind": "exact"
+    },
+    {
+      "fixtureId": "developed-center",
+      "engine": "reference",
+      "repetition": 1,
+      "score": 85,
+      "selectedMove": "Re6-f7",
+      "completedDepth": 1,
+      "nodes": 13,
+      "elapsedMs": 0.075,
+      "stopReason": "depth",
+      "scoreKind": "exact"
+    },
+    {
+      "fixtureId": "developed-center",
+      "engine": "reference",
+      "repetition": 2,
+      "score": 85,
+      "selectedMove": "Re6-f7",
+      "completedDepth": 1,
+      "nodes": 13,
+      "elapsedMs": 0.077,
+      "stopReason": "depth",
+      "scoreKind": "exact"
+    }
+  ]
+}

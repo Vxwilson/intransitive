@@ -3,6 +3,7 @@
  */
 
 import type { Player, Move } from '../core/types';
+import type { GameHistory } from '../core/game';
 import type { SerializedNNUEWeights } from './nnue/types';
 
 export interface EvaluationWeights {
@@ -126,6 +127,10 @@ export type WorkerRequest =
   | {
       type: 'STEP_LIVE';
       currentFen?: string;
+      /** Optional replay data; omitted FENs are treated as fresh history. */
+      history?: GameHistory;
+      /** Actual played ply; halfmoveClock is not a ply counter. */
+      ply?: number;
       searchDepth?: number;
       thinkTimeSec?: number;
       config?: Partial<TrainingConfig>;
@@ -150,6 +155,7 @@ export type WorkerRequest =
   | {
       type: 'START_ANALYSIS';
       currentFen: string;
+      history?: GameHistory;
       weights?: EvaluationWeights;
       nnueWeights?: SerializedNNUEWeights;
       maxDepth?: number;

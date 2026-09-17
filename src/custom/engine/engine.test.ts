@@ -17,8 +17,6 @@ import {
   runIterativeDeepeningAnalysis,
   selectMove,
   findUnstoppableRunway,
-  DRAW_CONTEMPT_FACTOR,
-  REPETITION_PENALTY_2FOLD,
 } from './search';
 import { algebraicToSquare, squareToAlgebraic, BLUE_GOAL_SQUARE, RED_GOAL_SQUARE } from '../core/constants';
 import { PLAYER_BLUE } from '../core/types';
@@ -241,30 +239,28 @@ SelfPlayTrainer.runArenaTournament(
 );
 assert(streamedMoveCount > 0, 'Streamed move count must be greater than 0');
 assert(streamedGames.size === 50, 'All 50 games in tournament must be streamed via onMove callback');
-// 9. AlphaZero Tournament Opening Divergence
-console.log('\n--- 9. AlphaZero Opening Branching & Match Diversity ---');
+// 9. Competitive arena greedy policy
+console.log('\n--- 9. Competitive Arena Greedy Policy ---');
 const openingFirstMoves = new Set<string>();
+const openingGames = new Set<number>();
 SelfPlayTrainer.runArenaTournament(
   heuristicWeights,
   heuristicWeights,
   20,
   1,
   (data) => {
-    // Collect the very first move of each game
-    if (data.san && !openingFirstMoves.has(`${data.gameIndex}:${data.san}`)) {
-      if (data.gameIndex && openingFirstMoves.size < 20) {
-        openingFirstMoves.add(`${data.gameIndex}:${data.san}`);
-      }
+    if (data.san && data.gameIndex && !openingGames.has(data.gameIndex)) {
+      openingGames.add(data.gameIndex);
+      openingFirstMoves.add(data.san);
     }
   }
 );
-// Extract distinct move strings across the 20 games
-const distinctMoves = new Set(Array.from(openingFirstMoves).map(s => s.split(':')[1]));
 assert(
-  distinctMoves.size >= 2,
-  `AlphaZero opening temperature must explore at least 2 distinct opening moves across 20 games, found ${distinctMoves.size}`
+  openingGames.size === 20,
+  `All 20 arena openings must be observed, found ${openingGames.size}`
 );
-console.log(`✓ Verified ${distinctMoves.size} distinct opening moves branched across 20 identical-weight games: ${Array.from(distinctMoves).join(', ')}`);
+assert(openingFirstMoves.size === 1, `Greedy arena must use one opening for identical weights, found ${openingFirstMoves.size}`);
+console.log(`✓ Verified deterministic greedy arena opening: ${Array.from(openingFirstMoves)[0]}`);
 
 // 10. Historical League Buffer Anti-Cycle Training
 console.log('\n--- 10. Anti-Cycle Historical League Buffer Simulation ---');
@@ -288,13 +284,16 @@ console.log('\n--- 11. Iterative Deepening & Multi-ply Forced Touchdown (+M2) De
 const mateGame = new IntransitiveGame('9/9/6R2/9/4r4/9/9/9/9 b 0 1');
 const testWeights = createHeuristicWeights();
 
-// With Runway Solver: search recognizes forced touchdown in 2 moves (+M2) immediately
+// Correctness-first search does not treat the runway detector as a proof
+// shortcut. A normal search needs enough plies to see the touchdown.
 const depth2Moves = getTopMoves(mateGame, testWeights, 3, 2);
 assert(depth2Moves.length > 0, 'Must generate legal moves');
-assert(depth2Moves[0].isMate === true, 'Runway solver must detect forced win in 2 moves even at Depth 2');
 assert(depth2Moves[0].san === 'Rg7-h8', 'Best move must advance along the runway to h8');
 
-// At Depth 4: iterative deepening reaches touchdown at ply 3, detecting forced win!
+const depth3Moves = getTopMoves(mateGame, testWeights, 3, 3);
+assert(depth3Moves[0].isMate === true, 'Ordinary depth-3 search must solve the short runner win');
+
+// At Depth 4: iterative deepening retains the searched touchdown PV.
 const progressSteps: number[] = [];
 const analysis = runIterativeDeepeningAnalysis(
   mateGame,
@@ -352,8 +351,8 @@ assert(asymmResult.gamesPlayed === 10, 'Must complete 10 games');
 assert(asymmResult.winsA + asymmResult.winsB + asymmResult.draws === 10, 'Wins + draws must equal total games');
 console.log(`✓ Asymmetric Depth Tournament verified (D2 vs D1): D2 wins ${asymmResult.winsA}, D1 wins ${asymmResult.winsB}, draws ${asymmResult.draws}`);
 
-// 13. Draw Contempt & Tactical Repetition Test
-console.log('\n--- 13. Draw Contempt & Tactical Repetition Test ---');
+// 13. Rule-correct repetition draw scoring
+console.log('\n--- 13. Rule-correct repetition draw scoring ---');
 const contemptGame = new IntransitiveGame();
 const b4 = algebraicToSquare('b4');
 const a4 = algebraicToSquare('a4');
@@ -364,25 +363,19 @@ const blueBck = { from: a4, to: b4, piece: 'R' as const };
 const redFwd = { from: h6, to: i6, piece: 'R' as const };
 const redBck = { from: i6, to: h6, piece: 'R' as const };
 
-// Cycle twice: state at b4 occurs 2 times
+// Reach the position immediately before the third occurrence of S0.
 contemptGame.makeMove(blueFwd);
 contemptGame.makeMove(redFwd);
 contemptGame.makeMove(blueBck);
 contemptGame.makeMove(redBck);
 contemptGame.makeMove(blueFwd);
 contemptGame.makeMove(redFwd);
-
-// Now it is Blue's turn to move from a4.
-// If Blue plays blueBck (a4 -> b4), it triggers 3-fold repetition!
-// In an equal position: Draw Contempt (-120 cp) causes Blue to REFUSE a4->b4 and make progress!
-const equalDecision = selectMove(contemptGame, heuristicWeights, { depth: 2, temperature: 0.0 });
-assert(
-  equalDecision.bestMove !== null && (equalDecision.bestMove.from !== a4 || equalDecision.bestMove.to !== b4),
-  `When equal, Draw Contempt must reject 3-fold repetition (a4->b4), got ${equalDecision.bestMove?.from}->${equalDecision.bestMove?.to}`
-);
-console.log('✓ Draw Contempt successfully prevents passive 3-fold repetition in equal positions');
-assert(DRAW_CONTEMPT_FACTOR === 120, 'Contempt factor must be 120 cp');
-assert(REPETITION_PENALTY_2FOLD === 60, '2-Fold repetition penalty must be 60 cp');
+contemptGame.makeMove(blueBck);
+const repetitionCandidates = getTopMoves(contemptGame, heuristicWeights, 20, 1);
+const repetitionDraw = repetitionCandidates.find((candidate) => candidate.move.from === i6 && candidate.move.to === h6);
+assert(repetitionDraw !== undefined, 'The third-occurrence move must be a legal candidate');
+assert(repetitionDraw.score === 0, `A genuine repetition draw must score zero, got ${repetitionDraw.score}`);
+console.log('✓ Genuine repetition draws score zero; no draw contempt or twofold penalty is applied');
 
 // 14. Defending Goal Entry Verification (Legal Goal Defense)
 console.log('\n--- 14. Defending Goal Entry Verification (Legal Goal Defense) ---');
@@ -411,7 +404,6 @@ const blunderGameFEN = '3p5/5r3/4s4/2s2rpr1/1PS1SP3/1RPR3R1/9/4P4/9 r 0 1';
 const blunderGame = new IntransitiveGame(blunderGameFEN);
 const g6Sq = algebraicToSquare('g6');
 const g5Sq = algebraicToSquare('g5');
-const f5Sq = algebraicToSquare('f5');
 
 // 1. Before Red moves: g6 is blocked by Red Paper. Blue must NOT have a runway.
 const runwayBefore = findUnstoppableRunway(blunderGame, PLAYER_BLUE, false);
@@ -440,19 +432,21 @@ assert(
 );
 console.log(`✓ Blue unstoppable 4-move highway mathematically detected: ${algebraicPath} (7 plies to touchdown)`);
 
-// 4. Blue Move Selection: Blue must instantly play Pf5-g6 with decisive forced win evaluation
+// 4. Production search must not publish the runway detector as an exact
+// result. The detector remains available as a diagnostic helper.
 const blueMoveDecision = selectMove(blunderGame, heuristicWeights, { depth: 1, temperature: 0.0 });
 assert(blueMoveDecision.bestMove !== null, 'Blue must select a move');
 assert(
-  blueMoveDecision.bestMove.from === f5Sq && blueMoveDecision.bestMove.to === g6Sq,
-  `Blue must play Pf5-g6 into the open corridor, got ${blueMoveDecision.bestMove?.from}->${blueMoveDecision.bestMove?.to}`
+  blunderGame.generateLegalMoves().some((move) =>
+    move.from === blueMoveDecision.bestMove?.from && move.to === blueMoveDecision.bestMove?.to
+  ),
+  'Production search must return a legal move without relying on runway proof'
 );
 assert(
-  blueMoveDecision.score >= 9900,
-  `Blue move score must be near-terminal win (>= 9900), got ${blueMoveDecision.score}`
+  blueMoveDecision.score < 9900,
+  `Unsearched long runway must not be labeled as an exact win, got ${blueMoveDecision.score}`
 );
 const blueFormatted = formatEvalScore(blueMoveDecision.score);
-console.log(`✓ Blue instantly plays Pf5-g6 with forced win evaluation (${blueFormatted}) at Depth 1!`);
+console.log(`✓ Long runway remains a non-terminal depth-1 evaluation (${blueFormatted}) at production search depth 1`);
 
 console.log('\n🎉 ALL INTRANSITIVE TD-LEARNING & ENGINE TESTS PASSED WITH 100% ACCURACY!');
-

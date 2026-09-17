@@ -42,6 +42,12 @@ export interface PieceCounts {
   total: number;
 }
 
+export interface GameHistory {
+  /** FEN at the beginning of the move list. */
+  startFen: string;
+  moves: Move[];
+}
+
 export class IntransitiveGame {
   public board: Uint8Array;
   public activePlayer: Player;
@@ -95,6 +101,30 @@ export class IntransitiveGame {
     this.recomputeMaterialCounts();
     this.zobristKey = computeZobristHash(this.board, this.activePlayer);
     this.repetitionMap.set(this.zobristKey, 1);
+  }
+
+  /**
+   * Replay a move history from a known starting FEN. A plain FEN cannot carry
+   * repetition history, so callers importing a position without this data get
+   * a deliberately fresh repetition map via loadFEN().
+   */
+  public static fromHistory(history: GameHistory, expectedFen?: string): IntransitiveGame {
+    const game = new IntransitiveGame(history.startFen);
+    for (const requestedMove of history.moves) {
+      const legalMove = game.generateLegalMoves().find((move) =>
+        move.from === requestedMove.from &&
+        move.to === requestedMove.to &&
+        move.piece === requestedMove.piece &&
+        move.captured === requestedMove.captured
+      );
+      if (!legalMove || !game.makeMove(legalMove)) {
+        throw new Error(`Invalid move in imported game history: ${JSON.stringify(requestedMove)}`);
+      }
+    }
+    if (expectedFen !== undefined && game.toFEN() !== expectedFen) {
+      throw new Error(`Imported history does not reach the requested FEN: expected ${expectedFen}, got ${game.toFEN()}`);
+    }
+    return game;
   }
 
   /**

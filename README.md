@@ -1,5 +1,7 @@
 # React + TypeScript + Vite
 
+For the Intransitive board-game benchmark and paired-match harness, see [`docs/intransitive-package-0-harness.md`](docs/intransitive-package-0-harness.md).
+
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
 Currently, two official plugins are available:

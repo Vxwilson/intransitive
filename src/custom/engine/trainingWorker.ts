@@ -6,7 +6,7 @@
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
 import { createZeroWeights, createHeuristicWeights } from './evaluator';
-import { selectMove, getTopMoves } from './search';
+import { selectMove, getTopMoves, isSearchAbort, MAX_SEARCH_DEPTH } from './search';
 import { SelfPlayTrainer } from './trainer';
 import { NNUETrainer } from './nnue/nnueTrainer';
 import { deserializeWeights, serializeWeights, getActiveFeatures } from './nnue/featureTransformer';
@@ -287,7 +287,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
     }
 
     case 'STEP_LIVE': {
-      const game = new IntransitiveGame(req.currentFen);
+      const game = req.history
+        ? IntransitiveGame.fromHistory(req.history, req.currentFen)
+        : new IntransitiveGame(req.currentFen);
       const searchDepth = req.searchDepth ?? req.config?.searchDepth ?? 2;
       const weightsToUse = req.customNNUEWeights
         ? deserializeWeights(req.customNNUEWeights)
@@ -301,7 +303,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         thinkTimeSec: req.thinkTimeSec,
         temperature: 15.0,
         rootNoise: 0.0,
-        ply: game.halfmoveClock,
+        ply: req.ply ?? 0,
         openingPlies: 4,
       });
 
@@ -541,10 +543,17 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       currentAnalysisId++;
       const thisId = currentAnalysisId;
       const targetFen = req.currentFen;
-      const game = new IntransitiveGame(targetFen);
+      const game = req.history
+        ? IntransitiveGame.fromHistory(req.history, targetFen)
+        : new IntransitiveGame(targetFen);
       const weights = req.weights ?? trainer.weights;
       const isInfinite = (req.maxDepth ?? 6) >= 99;
-      const maxDepth = isInfinite ? 16 : (req.maxDepth ?? 6);
+      // Iterative analysis yields between completed depths. This explicit
+      // safety ceiling prevents an unbounded request from monopolizing the
+      // worker while allowing ordinary requests above the old depth-6 cap.
+      const maxDepth = isInfinite
+        ? MAX_SEARCH_DEPTH
+        : Math.min(MAX_SEARCH_DEPTH, Math.max(1, req.maxDepth ?? 6));
       const count = req.count ?? 5;
       const startTime = performance.now();
       const context = { nodes: 0 };
@@ -554,7 +563,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       function stepDepth() {
         if (thisId !== currentAnalysisId) return;
 
-        const moves = getTopMoves(game, weights, count, currentDepth, context);
+        let moves: RankedMove[];
+        try {
+          moves = getTopMoves(game, weights, count, currentDepth, context, () => thisId !== currentAnalysisId);
+        } catch (error) {
+          if (isSearchAbort(error)) return;
+          throw error;
+        }
         if (thisId !== currentAnalysisId) return;
         lastResult = moves;
 
@@ -565,7 +580,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         post({
           type: isDone ? 'ANALYSIS_COMPLETE' : 'ANALYSIS_PROGRESS',
           depth: currentDepth,
-          maxDepth: isInfinite ? 99 : maxDepth,
+          maxDepth,
           nodes: context.nodes,
           nps,
           timeMs: Math.round(elapsedMs),
@@ -581,7 +596,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
               post({
                 type: 'ANALYSIS_COMPLETE',
                 depth: currentDepth,
-                maxDepth: isInfinite ? 99 : maxDepth,
+                maxDepth,
                 nodes: context.nodes,
                 nps,
                 timeMs: Math.round(elapsedMs),
@@ -600,7 +615,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           post({
             type: 'ANALYSIS_COMPLETE',
             depth: currentDepth - 1,
-            maxDepth: 99,
+            maxDepth,
             nodes: context.nodes,
             nps,
             timeMs: Math.round(elapsedMs),
