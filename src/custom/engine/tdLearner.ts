@@ -1,6 +1,6 @@
 /**
- * Intransitive Custom Engine - TD(lambda) Reinforcement Learning
- * Implements Temporal Difference Leaf learning on linear evaluation parameters.
+ * Intransitive Custom Engine - Linear TD(lambda) Reinforcement Learning.
+ * Implements the controlled temporal-difference baseline on linear parameters.
  */
 
 import { NUM_SQUARES } from '../core/constants';

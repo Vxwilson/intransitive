@@ -1,9 +1,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { getStoredCheckpoints } from '../src/custom/engine/checkpoint.ts';
+import { cloneWeights, createHeuristicWeights } from '../src/custom/engine/evaluator.ts';
+import { SelfPlayTrainer } from '../src/custom/engine/trainer.ts';
 import { deserializeWeights } from '../src/custom/engine/nnue/featureTransformer.ts';
 import { INTRANSITIVE_FIXTURES } from '../src/custom/harness/fixtures.ts';
 import {
+  createSeededRng,
   runPairedMatch,
   runSearchBenchmark,
   stripGames,
@@ -13,6 +16,7 @@ import type {
   MatchAgent,
   SearchLimit,
 } from '../src/custom/harness/types.ts';
+import type { Checkpoint, TrainingRunMetadata } from '../src/custom/engine/types.ts';
 
 const DEFAULT_REPORT_DIR = 'reports';
 
@@ -20,6 +24,7 @@ function usage(): never {
   console.error(`Usage:
   npm run intransitive:benchmark -- [options]
   npm run intransitive:match -- [options]
+  npm run intransitive:train -- [options]
 
 Benchmark options:
   --model master|heuristic|zero|<checkpoint-id>  (default: master)
@@ -42,7 +47,15 @@ Match options:
   --seed N --jsonl path --report path             (optional output paths)
 
 Production search supports depth, node, and wall-time limits. The reference
-engine remains a correctness oracle, not a strength claim.`);
+engine remains a correctness oracle, not a strength claim.
+
+Training options:
+  --start master|heuristic|zero|<checkpoint-id> (default: master)
+  --opponent heuristic|<checkpoint-id>             (default: heuristic)
+  --games N --seed N --search-depth N             (defaults: 3, 1, 1)
+  --max-plies N --learning-rate N --lambda N --epsilon N
+  --no-annealing                                  disable learning-rate annealing
+  --output path --log path                        new checkpoint and optional JSONL log`);
   process.exit(2);
 }
 
@@ -193,12 +206,132 @@ function runMatchCommand(args: Map<string, string>): void {
   console.log(JSON.stringify({ ...compact, jsonl: jsonlPath, report: reportPath }, null, 2));
 }
 
+const LINEAR_TD_ENGINE_VERSION = 'package-3-linear-td-v1';
+
+function trainingNumber(args: Map<string, string>, name: string, fallback: number): number {
+  const value = numberArg(args, name, fallback);
+  if (!Number.isFinite(value)) usage();
+  return value;
+}
+
+function linearWeights(checkpoint: Checkpoint, label: string) {
+  if (!checkpoint.weights) {
+    console.error(`${label} checkpoint ${checkpoint.id} is not a linear evaluator.`);
+    process.exit(2);
+  }
+  return cloneWeights(checkpoint.weights);
+}
+
+function runTrainingCommand(args: Map<string, string>): void {
+  const startIdentifier = args.get('start') ?? 'master';
+  const opponentIdentifier = args.get('opponent') ?? 'heuristic';
+  const startCheckpoint = findCheckpoint(startIdentifier);
+  const opponentCheckpoint = opponentIdentifier.toLowerCase() === 'heuristic'
+    ? findCheckpoint('heuristic')
+    : findCheckpoint(opponentIdentifier);
+  const startWeights = linearWeights(startCheckpoint, 'Start');
+  const opponentWeights = opponentIdentifier.toLowerCase() === 'heuristic'
+    ? createHeuristicWeights()
+    : linearWeights(opponentCheckpoint, 'Opponent');
+
+  const requestedGames = Math.max(1, Math.floor(trainingNumber(args, 'games', 3)));
+  const seed = Math.floor(trainingNumber(args, 'seed', 1));
+  const config = {
+    searchDepth: Math.max(1, Math.floor(trainingNumber(args, 'search-depth', 1))),
+    maxPliesPerGame: Math.max(1, Math.floor(trainingNumber(args, 'max-plies', 80))),
+    learningRate: Math.max(0, trainingNumber(args, 'learning-rate', 0.015)),
+    lambda: Math.max(0, Math.min(1, trainingNumber(args, 'lambda', 0.7))),
+    epsilon: Math.max(0, Math.min(1, trainingNumber(args, 'epsilon', 0.10))),
+    learningRateAnnealing: !args.has('no-annealing'),
+  };
+  const trainer = new SelfPlayTrainer(startWeights, config, {
+    rng: createSeededRng(seed),
+    learnerColorPolicy: 'alternate',
+    opponentPolicy: 'fixed',
+    opponentWeights,
+    opponentId: opponentCheckpoint.id,
+    initialStats: JSON.parse(JSON.stringify(startCheckpoint.stats)),
+  });
+
+  const startedAt = performance.now();
+  const startedCpu = process.cpuUsage();
+  const games = [];
+  let positions = 0;
+  for (let game = 0; game < requestedGames; game++) {
+    const record = trainer.playSelfPlayGame();
+    games.push(record);
+    positions += record.plies;
+  }
+  const elapsedWallMs = Math.round(performance.now() - startedAt);
+  const elapsedCpu = process.cpuUsage(startedCpu);
+  const elapsedCpuMs = Math.round((elapsedCpu.user + elapsedCpu.system) / 1000);
+  const terminalGames = games.filter((game) => game.isTerminal).length;
+  const truncatedGames = games.filter((game) => game.isTruncated).length;
+  const metadata: TrainingRunMetadata = {
+    schemaVersion: 1,
+    engineVersion: LINEAR_TD_ENGINE_VERSION,
+    engineCommit: process.env.INTRANSITIVE_ENGINE_COMMIT ?? 'unknown',
+    algorithm: 'linear-td-self-play',
+    config: {
+      ...trainer.learner.config,
+      learnerColorPolicy: trainer.learnerColorPolicy,
+      opponentPolicy: trainer.opponentPolicy,
+    },
+    seed,
+    startCheckpointId: startCheckpoint.id,
+    startCheckpointName: startCheckpoint.name,
+    requestedGames,
+    actualGames: games.length,
+    positions,
+    terminalGames,
+    truncatedGames,
+    elapsedWallMs,
+    elapsedCpuMs,
+    learnerBlueGames: games.filter((game) => game.learnerColor === 'blue').length,
+    learnerRedGames: games.filter((game) => game.learnerColor === 'red').length,
+    opponentVersions: games.reduce<Record<string, number>>((counts, game) => {
+      counts[game.opponentId] = (counts[game.opponentId] ?? 0) + 1;
+      return counts;
+    }, {}),
+  };
+  const checkpoint: Checkpoint = {
+    id: `training-${Date.now()}-${seed}`,
+    name: args.get('name') ?? `Linear TD self-play from ${startCheckpoint.name}`,
+    generation: trainer.stats.generation,
+    timestamp: Date.now(),
+    modelType: 'linear',
+    weights: trainer.weights,
+    stats: trainer.stats,
+    trainingMetadata: metadata,
+  };
+
+  const outputPath = ensureOutputParent(args.get('output') ?? `${DEFAULT_REPORT_DIR}/package-3-linear-td-seed-${seed}.json`);
+  writeFileSync(outputPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+  const logPath = args.get('log');
+  let absoluteLogPath: string | undefined;
+  if (logPath) {
+    absoluteLogPath = ensureOutputParent(logPath);
+    writeFileSync(absoluteLogPath, games.map((game) => JSON.stringify({
+      kind: 'intransitive-linear-td-game',
+      engineVersion: LINEAR_TD_ENGINE_VERSION,
+      seed,
+      ...game,
+    })).join('\n') + '\n');
+  }
+  console.log(JSON.stringify({
+    checkpoint: outputPath,
+    ...(absoluteLogPath ? { log: absoluteLogPath } : {}),
+    metadata,
+  }, null, 2));
+}
+
 function main(): void {
   const command = process.argv[2];
   if (!command) usage();
   const args = parseArgs(process.argv.slice(3));
   if (command === 'benchmark') runBenchmarkCommand(args);
   else if (command === 'match') runMatchCommand(args);
+  else if (command === 'train') runTrainingCommand(args);
   else usage();
 }
 

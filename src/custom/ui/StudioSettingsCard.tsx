@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Checkpoint } from '../engine/types';
+import { getCheckpointDisplayName } from '../engine/checkpoint';
 
 interface StudioSettingsCardProps {
   evalModelId: string;
@@ -178,10 +179,10 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
             >
               <optgroup label="Trained AI Models">
                 <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
-                <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
-                <option value="preset-advanced">🥈 Advanced (TD-Leaf Trained)</option>
-                <option value="preset-intermediate">🥉 Intermediate (TD-Leaf Trained)</option>
-                <option value="preset-novice">🎖️ Novice (TD-Leaf Trained)</option>
+                <option value="preset-master">🥇 Master (Linear TD Self-Play)</option>
+                <option value="preset-advanced">🥈 Advanced (Linear TD Self-Play)</option>
+                <option value="preset-intermediate">🥉 Intermediate (Linear TD Self-Play)</option>
+                <option value="preset-novice">🎖️ Novice (Linear TD Self-Play)</option>
               </optgroup>
               <optgroup label="Benchmarks & Baselines">
                 <option value="preset-heuristic-master">🏆 Heuristic Master (Baseline Handcrafted)</option>
@@ -194,7 +195,7 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                     .filter((c) => !c.id.startsWith('preset-'))
                     .map((c) => (
                       <option key={c.id} value={c.id}>
-                        💾 {c.name}
+                        💾 {getCheckpointDisplayName(c)}
                       </option>
                     ))}
                 </optgroup>
@@ -399,7 +400,7 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                       .filter((c) => !c.id.startsWith('preset-'))
                       .map((c) => (
                         <option key={c.id} value={c.id}>
-                          💾 {c.name}
+                          💾 {getCheckpointDisplayName(c)}
                         </option>
                       ))}
                   </optgroup>
@@ -583,7 +584,7 @@ export const StudioSettingsCard: React.FC<StudioSettingsCardProps> = ({
                           <>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', overflow: 'hidden', flex: 1 }}>
                               <span style={{ fontWeight: 700, color: '#2b2520', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                                💾 {cp.name}
+                                💾 {getCheckpointDisplayName(cp)}
                               </span>
                               <span style={{ color: '#8c827a', fontSize: '0.68rem', flexShrink: 0 }}>
                                 (Gen {cp.generation})

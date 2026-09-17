@@ -72,8 +72,8 @@ assert(
 );
 console.log(`✓ Initial symmetric evaluation verified: ${initialEval} cp (tempo bonus)`);
 
-// 3. TD-Leaf Weight Update Directionality
-console.log('\n--- 3. TD-Leaf Gradient & Credit Assignment ---');
+// 3. Linear TD Weight Update Directionality
+console.log('\n--- 3. Linear TD Gradient & Credit Assignment ---');
 const learner = new TDLearner({ learningRate: 0.05, lambda: 0.7 });
 const weights = createZeroWeights();
 

@@ -4,7 +4,12 @@
  */
 
 import { createZeroWeights, createHeuristicWeights } from './evaluator';
-import type { Checkpoint, EvaluationWeights, TrainingStats } from './types';
+import type {
+  Checkpoint,
+  EvaluationWeights,
+  TrainingRunMetadata,
+  TrainingStats,
+} from './types';
 
 const STORAGE_KEY = 'chessesque_intransitive_checkpoints';
 
@@ -15,6 +20,12 @@ export function createInitialStats(generation: number = 0): TrainingStats {
     blueWins: 0,
     redWins: 0,
     draws: 0,
+    terminalGames: 0,
+    truncatedGames: 0,
+    positionsSeen: 0,
+    learnerBlueGames: 0,
+    learnerRedGames: 0,
+    opponentVersions: {},
     avgGameLength: 0,
     history: [
       {
@@ -40,6 +51,19 @@ export function getDefaultCheckpointName(gamesPlayed: number): string {
   const min = String(now.getMinutes()).padStart(2, '0');
   const ss = String(now.getSeconds()).padStart(2, '0');
   return `Gen ${gamesPlayed}_${mm}${dd}_${hh}${min}${ss}`;
+}
+
+/**
+ * Present legacy linear checkpoint names with the Package 3 algorithm name
+ * without changing the bundled checkpoint payloads or their stable IDs.
+ */
+export function getCheckpointDisplayName(checkpoint: Pick<Checkpoint, 'name' | 'modelType'>): string {
+  if (checkpoint.modelType !== 'linear' || !checkpoint.name.includes('TD-Leaf')) {
+    return checkpoint.name;
+  }
+  return checkpoint.name
+    .replace('TD-Leaf Trained', 'Linear TD Self-Play')
+    .replace('TD-Leaf', 'Linear TD');
 }
 
 import {
@@ -202,7 +226,8 @@ export function saveCheckpoint(
   name: string,
   generation: number,
   weights: EvaluationWeights,
-  stats: TrainingStats
+  stats: TrainingStats,
+  trainingMetadata?: TrainingRunMetadata
 ): Checkpoint {
   const newCheckpoint: Checkpoint = {
     id: `checkpoint-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -212,6 +237,7 @@ export function saveCheckpoint(
     modelType: 'linear',
     weights: JSON.parse(JSON.stringify(weights)),
     stats: JSON.parse(JSON.stringify(stats)),
+    ...(trainingMetadata ? { trainingMetadata: JSON.parse(JSON.stringify(trainingMetadata)) } : {}),
   };
 
   const storage = getStorage();

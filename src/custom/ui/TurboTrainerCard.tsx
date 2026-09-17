@@ -66,6 +66,8 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
   const totalDecisive = stats.blueWins + stats.redWins;
   const bluePercent = totalDecisive > 0 ? Math.round((stats.blueWins / totalDecisive) * 100) : 50;
   const redPercent = 100 - bluePercent;
+  const hasMeasuredOutcomeCounters =
+    stats.terminalGames !== undefined && stats.truncatedGames !== undefined;
 
   const handleStartCustom = () => {
     const games = Math.max(1, Math.min(50000, Number(customAmount) || 100));
@@ -85,11 +87,11 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
             {trainerArchitecture === 'nnue' ? <BrainCircuit size={18} /> : <Cpu size={18} />}
           </div>
           <div className="intransitive-card-text">
-            <h3>{trainerArchitecture === 'nnue' ? 'NNUE Neural Trainer' : 'Turbo Background Trainer'}</h3>
+            <h3>{trainerArchitecture === 'nnue' ? 'NNUE Neural Trainer' : 'Linear TD Self-Play Trainer'}</h3>
             <p>
               {trainerArchitecture === 'nnue'
                 ? '486 -> 128x2 -> 32 -> 1 Neural Net with AdamW mini-batch replay buffer'
-                : 'High-speed Tabula Rasa self-play in headless background Web Worker'}
+                : 'Outcome-corrected linear TD self-play in a background Web Worker'}
             </p>
           </div>
         </div>
@@ -102,7 +104,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
               disabled={activeIsTraining}
               onClick={() => onChangeTrainerArchitecture?.('linear')}
               className={`intransitive-segmented-btn ${trainerArchitecture === 'linear' ? 'active' : ''}`}
-              title="Legacy Linear Tabula Rasa TD-Leaf Trainer"
+              title="Linear TD self-play trainer"
             >
               <Cpu size={12} /> Linear
             </button>
@@ -176,12 +178,16 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
         </div>
 
         <div className="intransitive-metric-item">
-          <span className="intransitive-metric-label">Games Played</span>
+          <span className="intransitive-metric-label">
+            Games Played{!hasMeasuredOutcomeCounters && <small> (legacy total)</small>}
+          </span>
           <span className="intransitive-metric-val">{stats.gamesPlayed.toLocaleString()}</span>
         </div>
 
         <div className="intransitive-metric-item">
-          <span className="intransitive-metric-label">Win Ratio</span>
+          <span className="intransitive-metric-label">
+            Win Balance{!hasMeasuredOutcomeCounters && <small> (legacy counters)</small>}
+          </span>
           <span className="intransitive-metric-val" style={{ fontSize: '0.82rem', marginTop: '0.3rem' }}>
             <span style={{ color: '#2563eb' }}>{bluePercent}% B</span> / <span style={{ color: '#ea580c' }}>{redPercent}% R</span>
           </span>
@@ -292,7 +298,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
         </div>
       )}
 
-      {/* AlphaZero Exploration & Anti-Cycle Safeguards Drawer */}
+      {/* Exploration & Anti-Cycle Safeguards Drawer */}
       <div className={`intransitive-accordion ${showSafeguards ? 'open' : ''}`} style={{ marginTop: '0.65rem' }}>
         <button
           type="button"
@@ -301,7 +307,7 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
         >
           <span className="intransitive-accordion-title">
             <Sparkles size={13} color="#d97706" />
-            <span>AlphaZero RL Safeguards & Hyperparameters</span>
+            <span>Exploration & League Safeguards</span>
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
             <span
@@ -347,7 +353,17 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
                 <strong style={{ color: '#292524' }}>Opponent Mix:</strong> 65% Self / 20% League / 15% Anchor
               </div>
               <div>
-                <strong style={{ color: '#292524' }}>TD Signal:</strong> Backward eligibility TD(λ=0.7)
+                <strong style={{ color: '#292524' }}>TD Signal:</strong> Linear TD(λ=0.7), terminal outcomes only
+              </div>
+              <div>
+                <strong style={{ color: '#292524' }}>Truncations:</strong>{' '}
+                {hasMeasuredOutcomeCounters ? stats.truncatedGames : 'unknown (legacy)'} (not used as results)
+              </div>
+              <div>
+                <strong style={{ color: '#292524' }}>Learner colors:</strong>{' '}
+                {hasMeasuredOutcomeCounters
+                  ? `${stats.learnerBlueGames ?? 0} Blue / ${stats.learnerRedGames ?? 0} Red`
+                  : 'unknown (legacy)'}
               </div>
             </div>
           </div>
@@ -423,13 +439,28 @@ export const TurboTrainerCard: React.FC<TurboTrainerCardProps> = ({
                 </div>
               </div>
 
+              {/* Provenance of terminal accounting */}
+              <div className="intransitive-stats-subcard">
+                <div className="intransitive-stats-subcard-title">
+                  <Activity size={13} color="#64748b" /> Outcome Accounting
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Terminal games:</span>
+                  <strong>{hasMeasuredOutcomeCounters ? stats.terminalGames : 'unknown (legacy)'}</strong>
+                </div>
+                <div className="intransitive-stats-row">
+                  <span>Safety-cap truncations:</span>
+                  <strong>{hasMeasuredOutcomeCounters ? stats.truncatedGames : 'unknown (legacy)'}</strong>
+                </div>
+              </div>
+
               {/* Ply Extremes */}
               <div className="intransitive-stats-subcard">
                 <div className="intransitive-stats-subcard-title">
                   <Activity size={13} color="#059669" /> Ply Extremes
                 </div>
                 <div className="intransitive-stats-row">
-                  <span>Shortest Decisive Game:</span>
+                  <span>Shortest Game:</span>
                   <strong>{stats.shortestGamePlies ? `${stats.shortestGamePlies} plies` : '—'}</strong>
                 </div>
                 <div className="intransitive-stats-row">

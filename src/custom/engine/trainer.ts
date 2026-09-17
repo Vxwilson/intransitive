@@ -1,10 +1,11 @@
 /**
- * Intransitive Custom Engine - Self-Play Game Simulator & Arena Matchmaker
- * Orchestrates Tabula Rasa self-play training games and generation milestones.
+ * Intransitive Custom Engine - Linear TD Self-Play & Arena Matchmaker.
+ * Orchestrates the controlled linear evaluator baseline and arena games.
  */
 
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
+import type { GameStatus } from '../core/types';
 import type { Player, Move } from '../core/types';
 import type {
   EvaluationWeights,
@@ -22,6 +23,39 @@ export interface GameRecord {
   reason: string | null;
   plies: number;
   moves: Move[];
+  /** True only when the rules, rather than the safety cap, ended the game. */
+  isTerminal: boolean;
+  /** A capped game has no invented winner and receives no TD update. */
+  isTruncated: boolean;
+  /** Blue-relative terminal reward; zero for draws and truncations. */
+  terminalReward: number;
+  learnerColor: 'blue' | 'red';
+  opponentId: string;
+}
+
+export type LearnerColorPolicy = 'alternate' | 'blue' | 'red';
+export type OpponentPolicy = 'league-heuristic' | 'fixed';
+
+export interface SelfPlayTrainerOptions {
+  /** Inject a seeded source for reproducible opponent and exploration choices. */
+  rng?: () => number;
+  learnerColorPolicy?: LearnerColorPolicy;
+  opponentPolicy?: OpponentPolicy;
+  opponentWeights?: EvaluationWeights;
+  opponentId?: string;
+  /** Resume lifetime statistics without mutating the source checkpoint. */
+  initialStats?: TrainingStats;
+}
+
+export function signedTerminalReward(status: GameStatus): number {
+  if (!status.isOver) return 0;
+  if (status.winner === PLAYER_BLUE) return 1000;
+  if (status.winner === PLAYER_RED) return -1000;
+  return 0;
+}
+
+function copyStats(stats: TrainingStats): TrainingStats {
+  return JSON.parse(JSON.stringify(stats)) as TrainingStats;
 }
 
 export class SelfPlayTrainer {
@@ -29,17 +63,37 @@ export class SelfPlayTrainer {
   public stats: TrainingStats;
   public learner: TDLearner;
   public leagueBuffer: EvaluationWeights[];
+  public readonly learnerColorPolicy: LearnerColorPolicy;
+  public readonly opponentPolicy: OpponentPolicy;
+  private readonly rng: () => number;
+  private readonly fixedOpponentWeights?: EvaluationWeights;
+  private readonly fixedOpponentId: string;
 
-  constructor(weights: EvaluationWeights, config: Partial<TrainingConfig> = {}) {
+  constructor(
+    weights: EvaluationWeights,
+    config: Partial<TrainingConfig> = {},
+    options: SelfPlayTrainerOptions = {}
+  ) {
     this.weights = weights;
     this.learner = new TDLearner(config);
     this.leagueBuffer = [cloneWeights(weights)];
-    this.stats = {
+    this.learnerColorPolicy = options.learnerColorPolicy ?? 'alternate';
+    this.opponentPolicy = options.opponentPolicy ?? 'league-heuristic';
+    this.rng = options.rng ?? Math.random;
+    this.fixedOpponentWeights = options.opponentWeights;
+    this.fixedOpponentId = options.opponentId ?? 'fixed-opponent';
+    this.stats = options.initialStats ? copyStats(options.initialStats) : {
       generation: 0,
       gamesPlayed: 0,
       blueWins: 0,
       redWins: 0,
       draws: 0,
+      terminalGames: 0,
+      truncatedGames: 0,
+      positionsSeen: 0,
+      learnerBlueGames: 0,
+      learnerRedGames: 0,
+      opponentVersions: {},
       avgGameLength: 0,
       touchdownWins: { blue: 0, red: 0 },
       eliminationWins: { blue: 0, red: 0 },
@@ -60,31 +114,56 @@ export class SelfPlayTrainer {
     };
   }
 
+  private learnerIsBlue(gameNumber: number): boolean {
+    if (this.learnerColorPolicy === 'blue') return true;
+    if (this.learnerColorPolicy === 'red') return false;
+    return gameNumber % 2 === 0;
+  }
+
+  private chooseOpponent(): { weights: EvaluationWeights; id: string } {
+    if (this.opponentPolicy === 'fixed') {
+      return {
+        weights: this.fixedOpponentWeights ?? createHeuristicWeights(),
+        id: this.fixedOpponentId,
+      };
+    }
+
+    // Keep the existing league schedule as the controlled baseline: current
+    // self-play 65%, historical checkpoint 20%, and heuristic anchor 15%.
+    const rOpponent = this.rng();
+    if (rOpponent < 0.15) {
+      return { weights: createHeuristicWeights(), id: 'heuristic-baseline' };
+    }
+    if (rOpponent < 0.35 && this.leagueBuffer.length > 0) {
+      const index = Math.min(
+        this.leagueBuffer.length - 1,
+        Math.floor(this.rng() * this.leagueBuffer.length)
+      );
+      return { weights: this.leagueBuffer[index], id: `historical-${index + 1}` };
+    }
+    return { weights: this.weights, id: 'current-learner' };
+  }
+
   /**
-   * Plays a single self-play game and performs TD update on the weights.
-   * Incorporates AlphaZero-style Softmax temperature + Dirichlet root noise,
-   * TD-Leaf lookahead targets, and Anti-Cycle Historical League opponent mixing.
+   * Plays a single linear TD self-play game and updates only on a
+   * rules-defined terminal result. A safety-cap truncation is recorded but
+   * deliberately contributes no pseudo-outcome and no TD update.
    */
-  public playSelfPlayGame(): GameRecord {
-    const game = new IntransitiveGame();
+  public playSelfPlayGame(startFen?: string): GameRecord {
+    const game = new IntransitiveGame(startFen);
     const trajectory: TrajectoryStep[] = [];
     const moves: Move[] = [];
 
     const { searchDepth, maxPliesPerGame } = this.learner.config;
-
-    // League Opponent Mixing (Anti-Cycle Buffer):
-    // In cyclic games (R > S > P > R), naive self-play oscillates in limit cycles.
-    // We mix:
-    // - 65% Pure self-play against latest model (this.weights)
-    // - 20% Sampled historical past checkpoint from the league buffer
-    // - 15% Heuristic benchmark anchor (prevents tactical drift)
-    let opponentWeights = this.weights;
-    const rOpponent = Math.random();
-    if (rOpponent < 0.15) {
-      opponentWeights = createHeuristicWeights();
-    } else if (rOpponent < 0.35 && this.leagueBuffer.length > 0) {
-      const idx = Math.floor(Math.random() * this.leagueBuffer.length);
-      opponentWeights = this.leagueBuffer[idx];
+    const learnerIsBlue = this.learnerIsBlue(this.stats.gamesPlayed);
+    const opponent = this.chooseOpponent();
+    const learnerColor = learnerIsBlue ? 'blue' : 'red';
+    const opponentVersions = this.stats.opponentVersions ?? (this.stats.opponentVersions = {});
+    opponentVersions[opponent.id] = (opponentVersions[opponent.id] ?? 0) + 1;
+    if (learnerIsBlue) {
+      this.stats.learnerBlueGames = (this.stats.learnerBlueGames ?? 0) + 1;
+    } else {
+      this.stats.learnerRedGames = (this.stats.learnerRedGames ?? 0) + 1;
     }
 
     while (trajectory.length < maxPliesPerGame) {
@@ -93,9 +172,9 @@ export class SelfPlayTrainer {
 
       const currentPly = trajectory.length;
       const isBlue = game.activePlayer === PLAYER_BLUE;
-      const currentWeights = isBlue ? this.weights : opponentWeights;
+      const currentWeights = isBlue === learnerIsBlue ? this.weights : opponent.weights;
 
-      // Multi-stage AlphaZero exploration schedule:
+      // Keep the existing multi-stage exploration schedule for the baseline:
       // - Plies 0..4 (Opening): T = 24 cp, Dirichlet noise = 0.25 (escape certainty, branch opening tree)
       // - Plies 5..8 (Midgame transition): T = 10 cp, Dirichlet noise = 0.08
       // - Plies 9+ (Tactical conversion & endgame): T = 0 cp, Dirichlet noise = 0.0 (greedy argmax)
@@ -114,6 +193,7 @@ export class SelfPlayTrainer {
         temperature: temp,
         rootNoise: noise,
         ply: currentPly,
+        rng: this.rng,
       });
       if (!bestMove) break;
 
@@ -126,14 +206,14 @@ export class SelfPlayTrainer {
     }
 
     const finalStatus = game.isTerminal();
-    let terminalReward = 0;
-    if (finalStatus.isOver && (finalStatus.winner === PLAYER_BLUE || finalStatus.winner === PLAYER_RED)) {
+    const isTerminal = finalStatus.isOver;
+    const isTruncated = !isTerminal;
+    const terminalReward = signedTerminalReward(finalStatus);
+    if (isTerminal && (finalStatus.winner === PLAYER_BLUE || finalStatus.winner === PLAYER_RED)) {
       const isBlue = finalStatus.winner === PLAYER_BLUE;
       if (isBlue) {
-        terminalReward = 1000;
         this.stats.blueWins++;
       } else {
-        terminalReward = -1000;
         this.stats.redWins++;
       }
 
@@ -149,38 +229,23 @@ export class SelfPlayTrainer {
           this.stats.immobilizations = (this.stats.immobilizations || 0) + 1;
         }
       }
-    } else {
-      // Adjudicate unfinished or draw games using material and goal proximity advantage
-      const finalFeats = extractFeatures(game);
-      const matAdv =
-        finalFeats.materialR * 100 +
-        finalFeats.materialP * 100 +
-        finalFeats.materialS * 100;
-      const posAdv =
-        finalFeats.goalDistanceAdvantage * 10 +
-        finalFeats.runnerAdvantage * 15 +
-        finalFeats.threatAdvantage * 10;
-      const totalAdv = matAdv + posAdv;
-
-      if (totalAdv > 20) {
-        terminalReward = Math.min(800, totalAdv);
-        this.stats.blueWins++;
-      } else if (totalAdv < -20) {
-        terminalReward = Math.max(-800, totalAdv);
-        this.stats.redWins++;
-      } else {
-        terminalReward = 0;
-        this.stats.draws++;
-        if (finalStatus.reason === 'repetition') {
-          this.stats.drawRepetition = (this.stats.drawRepetition || 0) + 1;
-        } else if (finalStatus.reason === '50-move') {
-          this.stats.draw50Move = (this.stats.draw50Move || 0) + 1;
-        }
+    } else if (isTerminal) {
+      this.stats.draws++;
+      if (finalStatus.reason === 'repetition') {
+        this.stats.drawRepetition = (this.stats.drawRepetition || 0) + 1;
+      } else if (finalStatus.reason === '50-move') {
+        this.stats.draw50Move = (this.stats.draw50Move || 0) + 1;
       }
     }
 
-    // Apply TD-Leaf update with generation-based annealing
-    this.learner.updateWeights(this.weights, trajectory, terminalReward, this.stats.generation);
+    if (isTerminal) {
+      // Linear TD self-play baseline: terminal wins are ±1000, draws are 0.
+      this.learner.updateWeights(this.weights, trajectory, terminalReward, this.stats.generation);
+      this.stats.terminalGames = (this.stats.terminalGames ?? 0) + 1;
+    } else {
+      this.stats.truncatedGames = (this.stats.truncatedGames ?? 0) + 1;
+    }
+    this.stats.positionsSeen = (this.stats.positionsSeen ?? 0) + trajectory.length;
 
     this.stats.gamesPlayed++;
     this.stats.generation++;
@@ -228,10 +293,15 @@ export class SelfPlayTrainer {
     }
 
     return {
-      winner: finalStatus.winner ?? 'draw',
+      winner: finalStatus.winner,
       reason: finalStatus.reason ?? 'max-plies',
       plies,
       moves,
+      isTerminal,
+      isTruncated,
+      terminalReward,
+      learnerColor,
+      opponentId: opponent.id,
     };
   }
 
@@ -278,8 +348,6 @@ export class SelfPlayTrainer {
     drawRate: number;
     gamesPlayed: number;
     avgGameLength: number;
-    accuracyA: number;
-    accuracyB: number;
     isCancelled?: boolean;
     thinkTimeSecA?: number;
     thinkTimeSecB?: number;
@@ -300,15 +368,10 @@ export class SelfPlayTrainer {
       return Boolean(isCancelled);
     };
 
-    const benchmarkWeights = createHeuristicWeights();
     let winsA = 0;
     let winsB = 0;
     let draws = 0;
     let totalPlies = 0;
-    let movesA = 0;
-    let accurateMovesA = 0;
-    let movesB = 0;
-    let accurateMovesB = 0;
 
     for (let i = 0; i < numGames; i++) {
       if (checkCancelled()) break;
@@ -323,7 +386,7 @@ export class SelfPlayTrainer {
         thinkTimeSecA,
         thinkTimeSecB,
         onMoveFn,
-        benchmarkWeights,
+        undefined,
         checkCancelled
       );
 
@@ -332,10 +395,6 @@ export class SelfPlayTrainer {
       else draws++;
 
       totalPlies += gameRes.plies;
-      movesA += gameRes.movesA;
-      accurateMovesA += gameRes.accurateMovesA;
-      movesB += gameRes.movesB;
-      accurateMovesB += gameRes.accurateMovesB;
 
       // Update real-time tally after game concludes
       if (onMoveFn) {
@@ -358,8 +417,6 @@ export class SelfPlayTrainer {
     const winRateB = Math.round((winsB / gamesPlayed) * 100);
     const drawRate = Math.round((draws / gamesPlayed) * 100);
     const avgGameLength = gamesPlayed > 0 ? Math.round(totalPlies / gamesPlayed) : 0;
-    const accuracyA = movesA > 0 ? Math.round((accurateMovesA / movesA) * 100) : 50;
-    const accuracyB = movesB > 0 ? Math.round((accurateMovesB / movesB) * 100) : 50;
 
     return {
       winsA,
@@ -370,8 +427,6 @@ export class SelfPlayTrainer {
       drawRate,
       gamesPlayed: winsA + winsB + draws,
       avgGameLength,
-      accuracyA,
-      accuracyB,
       isCancelled: checkCancelled(),
       thinkTimeSecA,
       thinkTimeSecB,
@@ -391,28 +446,20 @@ export class SelfPlayTrainer {
     thinkTimeSecA?: number,
     thinkTimeSecB?: number,
     onMove?: (moveData: any) => void,
-    benchmarkWeights?: EvaluationWeights,
+    /** @deprecated Kept for call-site compatibility; heuristic agreement is no longer computed. */
+    _legacyBenchmarkWeights?: EvaluationWeights,
     isCancelled?: (() => boolean) | { isCancelled: boolean }
   ): {
     winner: 'A' | 'B' | 'draw';
     reason: string | null;
     plies: number;
-    movesA: number;
-    accurateMovesA: number;
-    movesB: number;
-    accurateMovesB: number;
     lastMove: Move;
     lastFen: string;
     sanMoves: string[];
   } {
     const game = new IntransitiveGame();
     const aIsBlue = gameIndex % 2 === 0;
-    const benchWeights = benchmarkWeights ?? createHeuristicWeights();
     let plies = 0;
-    let movesA = 0;
-    let accurateMovesA = 0;
-    let movesB = 0;
-    let accurateMovesB = 0;
     let lastMove: Move = { from: 0, to: 0, piece: 'P' as any };
     const sanMoves: string[] = [];
 
@@ -450,21 +497,6 @@ export class SelfPlayTrainer {
       if (!bestMove) break;
       lastMove = bestMove;
 
-      // Evaluate move agreement against benchmark
-      const benchmark = selectMove(game, benchWeights, 1, 0.0);
-      const isAccurate =
-        benchmark.bestMove !== null &&
-        bestMove.from === benchmark.bestMove.from &&
-        bestMove.to === benchmark.bestMove.to;
-
-      if (isTurnA) {
-        movesA++;
-        if (isAccurate) accurateMovesA++;
-      } else {
-        movesB++;
-        if (isAccurate) accurateMovesB++;
-      }
-
       const san = game.formatMoveSAN(bestMove);
       sanMoves.push(san);
       game.makeMove(bestMove);
@@ -496,10 +528,6 @@ export class SelfPlayTrainer {
       winner,
       reason: status.reason,
       plies,
-      movesA,
-      accurateMovesA,
-      movesB,
-      accurateMovesB,
       lastMove,
       lastFen: game.toFEN(),
       sanMoves,

@@ -49,6 +49,17 @@ export interface TrainingStats {
   blueWins: number;
   redWins: number;
   draws: number;
+  /** Number of games that reached a rules-defined terminal state. */
+  terminalGames?: number;
+  /** Number of games stopped by the training safety cap without a result. */
+  truncatedGames?: number;
+  /** Number of positions recorded for training trajectories. */
+  positionsSeen?: number;
+  /** Learner color assignment counts for reproducibility diagnostics. */
+  learnerBlueGames?: number;
+  learnerRedGames?: number;
+  /** Actual opponent checkpoint/version labels selected during training. */
+  opponentVersions?: Record<string, number>;
   avgGameLength: number;
   history: GenerationPoint[];
   touchdownWins?: { blue: number; red: number };
@@ -60,6 +71,30 @@ export interface TrainingStats {
   longestGamePlies?: number;
   currentAlpha?: number;
   currentLoss?: number;
+}
+
+export interface TrainingRunMetadata {
+  schemaVersion: 1;
+  engineVersion: string;
+  engineCommit: string | 'unknown';
+  algorithm: 'linear-td-self-play';
+  config: TrainingConfig & {
+    learnerColorPolicy: 'alternate' | 'blue' | 'red';
+    opponentPolicy: 'league-heuristic' | 'fixed';
+  };
+  seed: number | 'unknown';
+  startCheckpointId: string | 'unknown';
+  startCheckpointName: string | 'unknown';
+  requestedGames: number | 'unknown';
+  actualGames: number | 'unknown';
+  positions: number | 'unknown';
+  terminalGames: number | 'unknown';
+  truncatedGames: number | 'unknown';
+  elapsedWallMs: number | 'unknown';
+  elapsedCpuMs: number | 'unknown';
+  learnerBlueGames: number | 'unknown';
+  learnerRedGames: number | 'unknown';
+  opponentVersions: Record<string, number>;
 }
 
 export interface RankedMove {
@@ -82,6 +117,8 @@ export interface Checkpoint {
   weights?: EvaluationWeights;
   nnueWeights?: SerializedNNUEWeights;
   stats: TrainingStats;
+  /** Optional Package 3 run metadata; absent on legacy checkpoints. */
+  trainingMetadata?: TrainingRunMetadata;
 }
 
 // Features extracted from a game state for TD gradient calculation
@@ -247,8 +284,6 @@ export type WorkerResponse =
       draws: number;
       gamesPlayed: number;
       avgGameLength?: number;
-      accuracyA?: number;
-      accuracyB?: number;
       depthA?: number;
       depthB?: number;
       thinkTimeSecA?: number;

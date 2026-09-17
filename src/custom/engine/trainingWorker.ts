@@ -5,7 +5,7 @@
 
 import { IntransitiveGame } from '../core/game';
 import { PLAYER_BLUE, PLAYER_RED } from '../core/types';
-import { createZeroWeights, createHeuristicWeights } from './evaluator';
+import { createZeroWeights } from './evaluator';
 import { selectMove, getTopMoves, isSearchAbort, MAX_SEARCH_DEPTH } from './search';
 import { SelfPlayTrainer } from './trainer';
 import { NNUETrainer } from './nnue/nnueTrainer';
@@ -178,6 +178,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           const finalStatus = game.isTerminal();
           let termOutcome = 0;
           if (finalStatus.isOver) {
+            trainer.stats.terminalGames = (trainer.stats.terminalGames ?? 0) + 1;
             const isBlueWin = finalStatus.winner === PLAYER_BLUE;
             const isRedWin = finalStatus.winner === PLAYER_RED;
 
@@ -206,7 +207,11 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
             } else if (finalStatus.reason === '50-move') {
               trainer.stats.draw50Move = (trainer.stats.draw50Move || 0) + 1;
             }
+          } else {
+            trainer.stats.truncatedGames = (trainer.stats.truncatedGames ?? 0) + 1;
           }
+
+          trainer.stats.positionsSeen = (trainer.stats.positionsSeen ?? 0) + samples.length;
 
           for (let s = 0; s < samples.length; s++) {
             samples[s].terminalOutcome = termOutcome;
@@ -295,7 +300,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         ? deserializeWeights(req.customNNUEWeights)
         : (req.customWeights ?? trainer.weights);
 
-      // AlphaZero dynamic live play: Use Softmax temperature (T = 15 cp) for opening plies (0..3)
+      // Live opening exploration: use a softmax temperature (T = 15 cp) for plies 0..3
       // to ensure rich branching and avoid deterministic repetition across matches,
       // then greedy argmax for tactically sound midgame/endgame conversion.
       const { bestMove, score } = selectMove(game, weightsToUse, {
@@ -364,11 +369,6 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       let winsB = 0;
       let draws = 0;
       let totalPlies = 0;
-      let movesA = 0;
-      let accurateMovesA = 0;
-      let movesB = 0;
-      let accurateMovesB = 0;
-      const benchmarkWeights = createHeuristicWeights();
       const completedGames: {
         gameNumber: number;
         fighterAIsBlue: boolean;
@@ -383,8 +383,6 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         const winRateB = Math.round((winsB / gamesPlayed) * 100);
         const drawRate = Math.round((draws / gamesPlayed) * 100);
         const avgGameLength = gamesPlayed > 0 ? Math.round(totalPlies / gamesPlayed) : 0;
-        const accuracyA = movesA > 0 ? Math.round((accurateMovesA / movesA) * 100) : 50;
-        const accuracyB = movesB > 0 ? Math.round((accurateMovesB / movesB) * 100) : 50;
 
         post({
           type: 'ARENA_RESULT',
@@ -396,8 +394,6 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           drawRate,
           gamesPlayed: winsA + winsB + draws,
           avgGameLength,
-          accuracyA,
-          accuracyB,
           depthA,
           depthB,
           thinkTimeSecA: timeSecA,
@@ -453,7 +449,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
               });
             }
           },
-          benchmarkWeights,
+          undefined,
           () => arenaCancelled
         );
 
@@ -462,10 +458,6 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         else draws++;
 
         totalPlies += gameRes.plies;
-        movesA += gameRes.movesA;
-        accurateMovesA += gameRes.accurateMovesA;
-        movesB += gameRes.movesB;
-        accurateMovesB += gameRes.accurateMovesB;
         gameIdx++;
 
         const pgnResult = gameRes.winner === 'A' ? (aIsBlue ? '1-0' : '0-1') : gameRes.winner === 'B' ? (aIsBlue ? '0-1' : '1-0') : '1/2-1/2';

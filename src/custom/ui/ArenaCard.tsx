@@ -1,6 +1,6 @@
 /**
  * ArenaCard - Visual Arena Tournament Simulation & Benchmarking Card
- * Provides multi-game simulations with win rates, average plies, and tactical move accuracy.
+ * Provides multi-game simulations with outcome-based win rates and average plies.
  */
 
 import React, { useState } from 'react';
@@ -22,6 +22,7 @@ import {
   FileText,
 } from 'lucide-react';
 import type { Checkpoint } from '../engine/types';
+import { getCheckpointDisplayName } from '../engine/checkpoint';
 
 const DEPTH_LABELS: Record<number, string> = {
   1: 'D1 Fast (1 ply)',
@@ -75,8 +76,6 @@ interface ArenaCardProps {
     drawRate: number;
     gamesPlayed: number;
     avgGameLength?: number;
-    accuracyA?: number;
-    accuracyB?: number;
     depthA?: number;
     depthB?: number;
     thinkTimeSecA?: number;
@@ -133,6 +132,8 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
 
   const checkpointA = checkpoints.find((c) => c.id === fighterAId) || checkpoints[0];
   const checkpointB = checkpoints.find((c) => c.id === fighterBId) || checkpoints[1] || checkpoints[0];
+  const checkpointAName = checkpointA ? getCheckpointDisplayName(checkpointA) : 'Fighter A';
+  const checkpointBName = checkpointB ? getCheckpointDisplayName(checkpointB) : 'Fighter B';
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -168,7 +169,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
           </div>
           <div className="intransitive-card-text">
             <h3>Tournament Simulation Arena</h3>
-            <p>Head-to-head benchmarking & tactical accuracy scoring</p>
+            <p>Head-to-head benchmarking by actual game outcomes</p>
           </div>
         </div>
 
@@ -205,17 +206,17 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
       <div className="intransitive-simulate-section">
         {/* Matchup Duel Strip */}
         <div className="intransitive-exhibition-duel-bar" style={{ margin: '0' }}>
-          <div className="fighter-duel-badge blue" title={`Blue: ${checkpointA?.name}`}>
+          <div className="fighter-duel-badge blue" title={`Blue: ${checkpointAName}`}>
             <span className="duel-dot blue" />
-            <span className="duel-name">{checkpointA?.name?.split(' ')[0] || 'Fighter A'}</span>
+            <span className="duel-name">{checkpointAName.split(' ')[0]}</span>
             <span className="duel-spec">{fighterAMode === 'time' ? `${fighterATimeSec}s` : `D${fighterADepth}`}</span>
           </div>
 
           <span className="duel-vs">vs</span>
 
-          <div className="fighter-duel-badge red" title={`Red: ${checkpointB?.name}`}>
+          <div className="fighter-duel-badge red" title={`Red: ${checkpointBName}`}>
             <span className="duel-dot red" />
-            <span className="duel-name">{checkpointB?.name?.split(' ')[0] || 'Fighter B'}</span>
+            <span className="duel-name">{checkpointBName.split(' ')[0]}</span>
             <span className="duel-spec">{fighterBMode === 'time' ? `${fighterBTimeSec}s` : `D${fighterBDepth}`}</span>
           </div>
         </div>
@@ -360,7 +361,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                       }}
                     >
                       <Activity size={12} color="#2563eb" />
-                      <span>{checkpointA?.name?.split(' ')[0] || 'Fighter A'} (Blue):</span>
+                      <span>{checkpointAName.split(' ')[0]} (Blue):</span>
                     </span>
 
                     <div className="intransitive-segmented-switch">
@@ -465,7 +466,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                       }}
                     >
                       <Activity size={12} color="#ea580c" />
-                      <span>{checkpointB?.name?.split(' ')[0] || 'Fighter B'} (Red):</span>
+                      <span>{checkpointBName.split(' ')[0]} (Red):</span>
                     </span>
 
                     <div className="intransitive-segmented-switch">
@@ -556,7 +557,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                 </div>
               </div>
 
-              {/* AlphaZero Dynamic Opening Exploration Indicator */}
+              {/* Competitive policy indicator */}
               <div
                 style={{
                   display: 'flex',
@@ -572,10 +573,10 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
               >
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}>
                   <Sparkles size={12} color="#2563eb" />
-                  <span>AlphaZero Dynamic Branching:</span>
+                  <span>Competitive move policy:</span>
                 </span>
                 <span style={{ color: '#059669', fontWeight: 600, fontSize: '0.68rem' }}>
-                  τ=15 cp Active
+                  Greedy after configured limit
                 </span>
               </div>
             </div>
@@ -620,7 +621,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
             {/* Wins Summary */}
             <div className="intransitive-tournament-scores">
               <span style={{ color: '#7c3aed', fontWeight: 700 }}>
-                ◆ {checkpointA?.name?.split(' ')[0] || 'Fighter A'} (
+                ◆ {checkpointAName.split(' ')[0]} (
                 {tournamentResult.thinkTimeSecA ? `${tournamentResult.thinkTimeSecA}s` : `D${tournamentResult.depthA ?? fighterADepth}`}
                 ): {tournamentResult.winsA} ({tournamentResult.winRateA}%)
               </span>
@@ -633,7 +634,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                 )}
               </span>
               <span style={{ color: '#c2410c', fontWeight: 700 }}>
-                ◇ {checkpointB?.name?.split(' ')[0] || 'Fighter B'} (
+                ◇ {checkpointBName.split(' ')[0]} (
                 {tournamentResult.thinkTimeSecB ? `${tournamentResult.thinkTimeSecB}s` : `D${tournamentResult.depthB ?? fighterBDepth}`}
                 ): {tournamentResult.winsB} ({tournamentResult.winRateB}%)
               </span>
@@ -644,7 +645,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
               <div
                 className="intransitive-win-seg-a"
                 style={{ width: `${tournamentResult.winRateA}%` }}
-                title={`${checkpointA?.name}: ${tournamentResult.winRateA}%`}
+                title={`${checkpointAName}: ${tournamentResult.winRateA}%`}
               />
               <div
                 className="intransitive-win-seg-draw"
@@ -654,11 +655,11 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
               <div
                 className="intransitive-win-seg-b"
                 style={{ width: `${tournamentResult.winRateB}%` }}
-                title={`${checkpointB?.name}: ${tournamentResult.winRateB}%`}
+                title={`${checkpointBName}: ${tournamentResult.winRateB}%`}
               />
             </div>
 
-            {/* Extended Match Stats: Average Moves & Tactical Accuracy */}
+            {/* Extended Match Stats */}
             <div className="intransitive-tournament-submetrics">
               <div className="intransitive-submetric-cell">
                 <Activity size={12} color="#786f66" />
@@ -666,15 +667,6 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                 <strong>{tournamentResult.avgGameLength ?? 0} plies</strong>
               </div>
 
-              <div className="intransitive-submetric-cell">
-                <Target size={12} color="#059669" />
-                <span>Tactical Accuracy:</span>
-                <strong>
-                  <span style={{ color: '#7c3aed' }}>{tournamentResult.accuracyA ?? 50}%</span>
-                  {' / '}
-                  <span style={{ color: '#c2410c' }}>{tournamentResult.accuracyB ?? 50}%</span>
-                </strong>
-              </div>
             </div>
 
             {onExportTournamentPGN && (
@@ -696,4 +688,3 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
     </div>
   );
 };
-

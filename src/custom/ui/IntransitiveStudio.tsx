@@ -54,6 +54,7 @@ import {
   PRESET_CHECKPOINTS,
   LEGACY_CHECKPOINT_IDS,
   getDefaultCheckpointName,
+  getCheckpointDisplayName,
 } from '../engine/checkpoint';
 import { IntransitiveBoard } from './IntransitiveBoard';
 import { LiveControls } from './LiveControls';
@@ -178,6 +179,12 @@ export const IntransitiveStudio: React.FC = () => {
     blueWins: 0,
     redWins: 0,
     draws: 0,
+    terminalGames: 0,
+    truncatedGames: 0,
+    positionsSeen: 0,
+    learnerBlueGames: 0,
+    learnerRedGames: 0,
+    opponentVersions: {},
     avgGameLength: 0,
     history: [{ generation: 0, R: 0, P: 0, S: 0, blueWinRate: 50 }],
   }));
@@ -233,8 +240,6 @@ export const IntransitiveStudio: React.FC = () => {
     drawRate: number;
     gamesPlayed: number;
     avgGameLength?: number;
-    accuracyA?: number;
-    accuracyB?: number;
     depthA?: number;
     depthB?: number;
     thinkTimeSecA?: number;
@@ -478,7 +483,7 @@ export const IntransitiveStudio: React.FC = () => {
         : `Gen ${cp.generation}`;
       return {
         id: cp.id,
-        name: cp.name,
+        name: getCheckpointDisplayName(cp),
         displayName: label,
         generation: cp.generation,
         gamesPlayed: cp.stats?.gamesPlayed ?? cp.generation * 50,
@@ -489,7 +494,7 @@ export const IntransitiveStudio: React.FC = () => {
     }
     return {
       id: 'preset-master',
-      name: 'Master (TD-Leaf Trained)',
+      name: 'Master (Linear TD Self-Play)',
       displayName: 'Master',
       generation: 800,
       gamesPlayed: 800,
@@ -510,7 +515,10 @@ export const IntransitiveStudio: React.FC = () => {
       nnueWeights: trainerArchitecture === 'nnue' ? serializeWeights(currentNNUEWeights) : undefined,
       stats: stats,
     };
-    return [currentCp, ...checkpoints];
+    return [currentCp, ...checkpoints].map((checkpoint) => ({
+      ...checkpoint,
+      name: getCheckpointDisplayName(checkpoint),
+    }));
   }, [checkpoints, stats, trainerArchitecture, weights, currentNNUEWeights]);
 
   // The definitive terminal status of the full match session (derived from activeMoveHistory or activeGame)
@@ -1875,10 +1883,10 @@ export const IntransitiveStudio: React.FC = () => {
                   </optgroup>
                   <optgroup label="Trained AI Models">
                     <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled)</option>
-                    <option value="preset-master">🥇 Master (TD-Leaf Trained)</option>
-                    <option value="preset-advanced">🥈 Advanced (TD-Leaf Trained)</option>
-                    <option value="preset-intermediate">🥉 Intermediate (TD-Leaf Trained)</option>
-                    <option value="preset-novice">🎖️ Novice (TD-Leaf Trained)</option>
+                    <option value="preset-master">🥇 Master (Linear TD Self-Play)</option>
+                    <option value="preset-advanced">🥈 Advanced (Linear TD Self-Play)</option>
+                    <option value="preset-intermediate">🥉 Intermediate (Linear TD Self-Play)</option>
+                    <option value="preset-novice">🎖️ Novice (Linear TD Self-Play)</option>
                   </optgroup>
                   <optgroup label="Benchmarks & Baselines">
                     <option value="preset-heuristic-master">🏆 Heuristic Master (Boss)</option>
@@ -2137,10 +2145,10 @@ export const IntransitiveStudio: React.FC = () => {
               >
                 <optgroup label="Trained Baselines">
                   <option value="preset-nnue-500k">🧠 NNUE 500k (Master-Distilled Gen 500k)</option>
-                  <option value="preset-master">🥇 Master (TD-Leaf Gen 1645)</option>
-                  <option value="preset-advanced">🥈 Advanced (TD-Leaf Gen 800)</option>
-                  <option value="preset-intermediate">🥉 Intermediate (TD-Leaf Gen 300)</option>
-                  <option value="preset-novice">🎖️ Novice (TD-Leaf Gen 1300)</option>
+                  <option value="preset-master">🥇 Master (Linear TD Gen 1645)</option>
+                  <option value="preset-advanced">🥈 Advanced (Linear TD Gen 800)</option>
+                  <option value="preset-intermediate">🥉 Intermediate (Linear TD Gen 300)</option>
+                  <option value="preset-novice">🎖️ Novice (Linear TD Gen 1300)</option>
                 </optgroup>
                 <optgroup label="From Scratch / Heuristic">
                   <option value="preset-gen-0">👶 None / From Scratch (Tabula Rasa Gen 0)</option>
