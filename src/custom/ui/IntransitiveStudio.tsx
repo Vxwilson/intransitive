@@ -239,6 +239,15 @@ export const IntransitiveStudio: React.FC = () => {
     winRateB: number;
     drawRate: number;
     gamesPlayed: number;
+    resolvedGames?: number;
+    truncations?: number;
+    cancelledGames?: number;
+    errors?: number;
+    requestedGames?: number;
+    seed?: number;
+    uniqueOpeningCount?: number;
+    duplicateOpeningCount?: number;
+    error?: string;
     avgGameLength?: number;
     depthA?: number;
     depthB?: number;
@@ -336,6 +345,9 @@ export const IntransitiveStudio: React.FC = () => {
     currentWinsA?: number;
     currentWinsB?: number;
     currentDraws?: number;
+    truncations?: number;
+    cancelledGames?: number;
+    errors?: number;
     fighterAIsBlue?: boolean;
   }[]>([]);
   const pendingTournamentResultRef = useRef<any>(null);
@@ -347,6 +359,9 @@ export const IntransitiveStudio: React.FC = () => {
     winsA: number;
     winsB: number;
     draws: number;
+    truncations?: number;
+    cancelledGames?: number;
+    errors?: number;
     isSimulating: boolean;
     fighterAIsBlue?: boolean;
   } | null>(null);
@@ -819,10 +834,13 @@ export const IntransitiveStudio: React.FC = () => {
           if (!tournamentZoomEnabledRef.current && (data.currentWinsA !== undefined || data.totalGames !== undefined)) {
             setArenaLiveResults({
               gameIndex: data.gameIndex ?? 1,
-              totalGames: data.totalGames ?? 20,
+              totalGames: data.totalGames ?? 10,
               winsA: data.currentWinsA ?? 0,
               winsB: data.currentWinsB ?? 0,
               draws: data.currentDraws ?? 0,
+              truncations: data.truncations ?? 0,
+              cancelledGames: data.cancelledGames ?? 0,
+              errors: data.errors ?? 0,
               isSimulating: true,
               fighterAIsBlue: data.fighterAIsBlue,
             });
@@ -848,6 +866,9 @@ export const IntransitiveStudio: React.FC = () => {
                     winsA: data.winsA,
                     winsB: data.winsB,
                     draws: data.draws,
+                    truncations: data.truncations,
+                    cancelledGames: data.cancelledGames,
+                    errors: data.errors,
                     gameIndex: data.gamesPlayed,
                     isSimulating: false,
                   }
@@ -865,6 +886,9 @@ export const IntransitiveStudio: React.FC = () => {
                     winsA: data.winsA,
                     winsB: data.winsB,
                     draws: data.draws,
+                    truncations: data.truncations,
+                    cancelledGames: data.cancelledGames,
+                    errors: data.errors,
                     gameIndex: data.gamesPlayed,
                     isSimulating: false,
                   }
@@ -935,6 +959,9 @@ export const IntransitiveStudio: React.FC = () => {
         currentWinsA?: number;
         currentWinsB?: number;
         currentDraws?: number;
+        truncations?: number;
+        cancelledGames?: number;
+        errors?: number;
         fighterAIsBlue?: boolean;
       } | null = null;
       for (let b = 0; b < batchSize; b++) {
@@ -954,10 +981,13 @@ export const IntransitiveStudio: React.FC = () => {
         if (lastNext.currentWinsA !== undefined || lastNext.totalGames !== undefined) {
           setArenaLiveResults({
             gameIndex: lastNext.gameIndex ?? 1,
-            totalGames: lastNext.totalGames ?? 20,
+            totalGames: lastNext.totalGames ?? 10,
             winsA: lastNext.currentWinsA ?? 0,
             winsB: lastNext.currentWinsB ?? 0,
             draws: lastNext.currentDraws ?? 0,
+            truncations: lastNext.truncations ?? 0,
+            cancelledGames: lastNext.cancelledGames ?? 0,
+            errors: lastNext.errors ?? 0,
             isSimulating: true,
             fighterAIsBlue: lastNext.fighterAIsBlue,
           });
@@ -965,11 +995,13 @@ export const IntransitiveStudio: React.FC = () => {
 
         setArenaGame(new IntransitiveGame(lastNext.fen));
         setArenaLastMove(lastNext.move);
-        setArenaMoveHistory((prev) => [
-          ...prev,
-          { move: lastNext!.move, san: lastNext!.san, fen: lastNext!.fen },
-        ]);
-        setArenaHistoryIndex((prev) => prev + 1);
+        if (lastNext.san) {
+          setArenaMoveHistory((prev) => [
+            ...prev,
+            { move: lastNext!.move, san: lastNext!.san, fen: lastNext!.fen },
+          ]);
+          setArenaHistoryIndex((prev) => prev + 1);
+        }
 
         if (soundEnabledRef.current && lastNext.isOver) {
           sounds.playCapture();
@@ -988,6 +1020,9 @@ export const IntransitiveStudio: React.FC = () => {
                 winsA: finalResult.winsA,
                 winsB: finalResult.winsB,
                 draws: finalResult.draws,
+                truncations: finalResult.truncations,
+                cancelledGames: finalResult.cancelledGames,
+                errors: finalResult.errors,
                 gameIndex: finalResult.gamesPlayed,
                 isSimulating: false,
               }
@@ -997,6 +1032,9 @@ export const IntransitiveStudio: React.FC = () => {
                 winsA: finalResult.winsA,
                 winsB: finalResult.winsB,
                 draws: finalResult.draws,
+                truncations: finalResult.truncations,
+                cancelledGames: finalResult.cancelledGames,
+                errors: finalResult.errors,
                 isSimulating: false,
               }
         );
@@ -1031,6 +1069,7 @@ export const IntransitiveStudio: React.FC = () => {
           searchDepth: activeDepth,
           customWeights: !isNNUE ? (fighterWeights as EvaluationWeights) : undefined,
           customNNUEWeights: isNNUE ? serializeWeights(fighterWeights as NNUEWeights) : undefined,
+          movePolicy: activeTabRef.current === 'arena' ? 'competitive' : 'casual-opening',
         });
       }
     }, delayMs);
@@ -1119,6 +1158,7 @@ export const IntransitiveStudio: React.FC = () => {
           searchDepth: activeDepth,
           customWeights: !isNNUE ? (watchWeights as EvaluationWeights) : undefined,
           customNNUEWeights: isNNUE ? serializeWeights(watchWeights as NNUEWeights) : undefined,
+          movePolicy: isPlay ? 'casual-opening' : 'competitive',
         });
       }
     }
@@ -1188,6 +1228,7 @@ export const IntransitiveStudio: React.FC = () => {
           thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
           customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
           customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
+          movePolicy: 'casual-opening',
         });
       }
     }
@@ -1226,6 +1267,7 @@ export const IntransitiveStudio: React.FC = () => {
           thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
           customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
           customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
+          movePolicy: 'casual-opening',
         });
       }
     } else {
@@ -1403,6 +1445,7 @@ export const IntransitiveStudio: React.FC = () => {
               thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
               customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
               customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
+              movePolicy: 'casual-opening',
             });
           }
         }
@@ -1468,6 +1511,7 @@ export const IntransitiveStudio: React.FC = () => {
               thinkTimeSec: playOpponentMode === 'time' ? playOpponentTimeSec : undefined,
               customWeights: !isOppNNUE ? (opponentWeights as EvaluationWeights) : undefined,
               customNNUEWeights: isOppNNUE ? serializeWeights(opponentWeights as NNUEWeights) : undefined,
+              movePolicy: 'casual-opening',
             });
           }
         }
@@ -1697,6 +1741,7 @@ export const IntransitiveStudio: React.FC = () => {
       setIsZoomingTournament(true);
     }
     if (workerRef.current) {
+      const seed = (Date.now() ^ (games << 8) ^ (depthA << 4) ^ depthB) >>> 0;
       workerRef.current.postMessage({
         type: 'ARENA_RUN',
         checkpointA: cpA,
@@ -1707,6 +1752,9 @@ export const IntransitiveStudio: React.FC = () => {
         thinkTimeSecA,
         thinkTimeSecB,
         streamMoves: tournamentZoomEnabled,
+        seed,
+        openingPlies: 4,
+        safetyCap: 400,
       });
     }
   }, [tournamentZoomEnabled, fighterADepth, fighterBDepth, handleResetGame]);
@@ -2541,7 +2589,7 @@ export const IntransitiveStudio: React.FC = () => {
                         onResume={handleResumeTournament}
                         onStop={handleStopTournament}
                         gameIndex={arenaLiveResults?.gameIndex ?? 1}
-                        totalGames={arenaLiveResults?.totalGames ?? 20}
+                        totalGames={arenaLiveResults?.totalGames ?? 10}
                         winsA={arenaLiveResults?.winsA ?? 0}
                         winsB={arenaLiveResults?.winsB ?? 0}
                         draws={arenaLiveResults?.draws ?? 0}

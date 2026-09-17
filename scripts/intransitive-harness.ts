@@ -39,7 +39,8 @@ Benchmark options:
 Match options:
   --a master|heuristic|zero|random|<checkpoint-id> (default: master)
   --b master|heuristic|zero|random|<checkpoint-id> (default: heuristic)
-  --pairs N --opening-plies N --max-plies N       (defaults: 1, 4, 400)
+  --games N --opening-plies N --max-plies N        (defaults: 10, 4, 400; games must be even)
+  --pairs N                                       (legacy alias for --games N*2)
   --depth N | --nodes N | --time-ms N             (default: --depth 1)
   --a-depth N --b-depth N                         (optional per-agent depth overrides)
   --max-depth N                                   (time/node safety ceiling)
@@ -189,10 +190,23 @@ function runMatchCommand(args: Map<string, string>): void {
   const limit = searchLimit(args, 1);
   const agentA = checkpointAgent(args.get('a') ?? 'master', engine, limit, numberArg(args, 'max-depth', 4));
   const agentB = checkpointAgent(args.get('b') ?? 'heuristic', engine, limit, numberArg(args, 'max-depth', 4));
+  if (args.has('games') && args.has('pairs')) {
+    console.error('Choose exactly one of --games or --pairs.');
+    process.exit(2);
+  }
+  const totalGames = args.has('games')
+    ? numberArg(args, 'games', 10)
+    : args.has('pairs')
+      ? numberArg(args, 'pairs', 5) * 2
+      : 10;
+  if (!Number.isInteger(totalGames) || totalGames < 2 || totalGames % 2 !== 0) {
+    console.error(`Paired matches require an even integer game count of at least 2; received ${totalGames}`);
+    process.exit(2);
+  }
   const report = runPairedMatch({
     agentA: { ...agentA, search: agentA.search ? { ...agentA.search, limit: args.has('a-depth') ? { kind: 'depth', value: numberArg(args, 'a-depth', 1) } : agentA.search.limit } : undefined },
     agentB: { ...agentB, search: agentB.search ? { ...agentB.search, limit: args.has('b-depth') ? { kind: 'depth', value: numberArg(args, 'b-depth', 1) } : agentB.search.limit } : undefined },
-    pairCount: numberArg(args, 'pairs', 1),
+    totalGames,
     seed: numberArg(args, 'seed', 1),
     openingPlies: numberArg(args, 'opening-plies', 4),
     safetyCap: numberArg(args, 'max-plies', 400),

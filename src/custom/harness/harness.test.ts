@@ -4,6 +4,9 @@ import { createHeuristicWeights, createZeroWeights } from '../engine/evaluator';
 import { INTRANSITIVE_FIXTURES, loadFixture } from './fixtures';
 import {
   createSeededRng,
+  createPairedMatchOpening,
+  replayMatchOpening,
+  runMatchGame,
   runPairedMatch,
   runSearchBenchmark,
   searchPosition,
@@ -130,7 +133,49 @@ assert(JSON.stringify(withoutTiming(firstMatch)) === JSON.stringify(withoutTimin
 assert(Boolean(firstMatch.games?.[0].aIsBlue === true && firstMatch.games?.[1].aIsBlue === false), 'paired games must swap fighter colors');
 assert(Boolean(JSON.stringify(firstMatch.games?.[0].moves.slice(0, 4).map((move) => move.move)) === JSON.stringify(firstMatch.games?.[1].moves.slice(0, 4).map((move) => move.move))), 'paired games must replay identical opening moves');
 assert(Boolean(firstMatch.games?.[0].modelIds.blue === firstMatch.games?.[1].modelIds.red), 'paired game model assignments must swap');
+assert(firstMatch.games?.[0].schemaVersion === 2, 'match logs must use the replayable match schema');
+assert(firstMatch.games?.[0].opening.identity === firstMatch.games?.[1].opening.identity, 'paired games must share one opening identity');
+assert(
+  replayMatchOpening(firstMatch.games![0].opening).toFEN() === firstMatch.games![0].moves[3].fen,
+  'opening replay must preserve the exact post-opening FEN'
+);
+assert(
+  IntransitiveGame.fromHistory(firstMatch.games![0].history, firstMatch.games![0].moves.at(-1)?.fen).toFEN() === firstMatch.games![0].moves.at(-1)?.fen,
+  'full match history must replay to the logged final position'
+);
 console.log('✓ Seeded paired games reproduce and replay one opening with assignments swapped');
+
+const tenGameMatch = runPairedMatch({
+  agentA: deterministicOptions.agentA,
+  agentB: deterministicOptions.agentB,
+  totalGames: 10,
+  seed: 9876,
+  openingPlies: 4,
+  safetyCap: 20,
+});
+assert(tenGameMatch.pairCount === 5 && tenGameMatch.gamesPlayed === 10, 'arbitrary even game counts must map to half as many opening pairs');
+assert(new Set(tenGameMatch.games!.filter((game) => game.aIsBlue).map((game) => game.opening.identity)).size > 1, 'different opening pairs should normally produce varied opening identities');
+let rejectedOddGameCount = false;
+try {
+  runPairedMatch({ agentA: deterministicOptions.agentA, agentB: deterministicOptions.agentB, totalGames: 3 });
+} catch {
+  rejectedOddGameCount = true;
+}
+assert(rejectedOddGameCount, 'odd game counts must be rejected for paired evaluation');
+const cancelledGame = runMatchGame({
+  pairIndex: 0,
+  gameIndex: 0,
+  totalGames: 2,
+  seed: 11,
+  opening: createPairedMatchOpening(11, 0, undefined, 4),
+  agentA: deterministicOptions.agentA,
+  agentB: deterministicOptions.agentB,
+  aIsBlue: true,
+  safetyCap: 20,
+  shouldCancel: () => true,
+});
+assert(cancelledGame.outcome === 'cancelled' && !cancelledGame.capHit, 'cancelled games must remain distinct from safety-cap truncations');
+console.log('✓ Ten-game tournaments use five replayable opening pairs; odd counts are rejected');
 
 const randomMatch = runPairedMatch({
   agentA: { modelId: 'random-baseline', modelName: 'Random', kind: 'random' },

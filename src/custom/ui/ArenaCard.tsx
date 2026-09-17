@@ -75,6 +75,15 @@ interface ArenaCardProps {
     winRateB: number;
     drawRate: number;
     gamesPlayed: number;
+    resolvedGames?: number;
+    truncations?: number;
+    cancelledGames?: number;
+    errors?: number;
+    requestedGames?: number;
+    seed?: number;
+    uniqueOpeningCount?: number;
+    duplicateOpeningCount?: number;
+    error?: string;
     avgGameLength?: number;
     depthA?: number;
     depthB?: number;
@@ -91,6 +100,9 @@ interface ArenaCardProps {
     winsA: number;
     winsB: number;
     draws: number;
+    truncations?: number;
+    cancelledGames?: number;
+    errors?: number;
     isSimulating: boolean;
     fighterAIsBlue?: boolean;
   } | null;
@@ -127,7 +139,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
   arenaLiveResults,
   onExportTournamentPGN,
 }) => {
-  const [customGames, setCustomGames] = useState<number>(20);
+  const [customGames, setCustomGames] = useState<number>(10);
   const [showAdvancedOptions, setShowAdvancedOptions] = useState<boolean>(false);
 
   const checkpointA = checkpoints.find((c) => c.id === fighterAId) || checkpoints[0];
@@ -147,7 +159,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
   };
 
   const handleSimulate = () => {
-    const games = Math.max(1, Math.min(2000, Number(customGames) || 20));
+    const games = Math.max(2, Math.min(2000, Math.floor((Number(customGames) || 10) / 2) * 2));
     onRunTournament(
       checkpointA,
       checkpointB,
@@ -227,15 +239,16 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
             <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4a4239' }}>Simulate:</span>
             <input
               type="number"
-              min="1"
+              min="2"
               max="2000"
+              step="2"
               value={customGames}
-              onChange={(e) => setCustomGames(Math.max(1, parseInt(e.target.value, 10) || 1))}
+              onChange={(e) => setCustomGames(Math.max(2, Math.min(2000, Math.floor((parseInt(e.target.value, 10) || 10) / 2) * 2)))}
               disabled={isSimulating}
               className="intransitive-input-number warm"
               style={{ width: '64px', padding: '0.25rem 0.4rem', fontSize: '0.75rem' }}
             />
-            <span style={{ fontSize: '0.74rem', color: '#6b635b' }}>games</span>
+            <span style={{ fontSize: '0.74rem', color: '#6b635b' }}>games (paired)</span>
           </div>
 
           {/* Quick preset chips */}
@@ -576,7 +589,7 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                   <span>Competitive move policy:</span>
                 </span>
                 <span style={{ color: '#059669', fontWeight: 600, fontSize: '0.68rem' }}>
-                  Greedy after configured limit
+                  Greedy throughout (paired openings)
                 </span>
               </div>
             </div>
@@ -666,8 +679,31 @@ export const ArenaCard: React.FC<ArenaCardProps> = ({
                 <span>Avg Length:</span>
                 <strong>{tournamentResult.avgGameLength ?? 0} plies</strong>
               </div>
+              {tournamentResult.duplicateOpeningCount !== undefined && (
+                <div className="intransitive-submetric-cell" style={{ color: tournamentResult.duplicateOpeningCount > 0 ? '#b45309' : '#059669' }}>
+                  <span>Unique openings:</span>
+                  <strong>{tournamentResult.uniqueOpeningCount ?? 0}{tournamentResult.duplicateOpeningCount > 0 ? ` (${tournamentResult.duplicateOpeningCount} duplicate)` : ''}</strong>
+                </div>
+              )}
+              <div className="intransitive-submetric-cell">
+                <Activity size={12} color="#786f66" />
+                <span>Resolved:</span>
+                <strong>{tournamentResult.resolvedGames ?? tournamentResult.gamesPlayed}/{tournamentResult.requestedGames ?? tournamentResult.gamesPlayed}</strong>
+              </div>
+              {((tournamentResult.truncations ?? 0) + (tournamentResult.cancelledGames ?? 0) + (tournamentResult.errors ?? 0)) > 0 && (
+                <div className="intransitive-submetric-cell" style={{ color: '#b45309' }}>
+                  <span>Unresolved:</span>
+                  <strong>{(tournamentResult.truncations ?? 0) + (tournamentResult.cancelledGames ?? 0) + (tournamentResult.errors ?? 0)}</strong>
+                </div>
+              )}
 
             </div>
+
+            {tournamentResult.error && (
+              <div style={{ marginTop: '0.4rem', color: '#b91c1c', fontSize: '0.72rem' }}>
+                {tournamentResult.error}
+              </div>
+            )}
 
             {onExportTournamentPGN && (
               <div style={{ marginTop: '0.45rem', paddingTop: '0.35rem', borderTop: '1px solid #f0ebe1' }}>

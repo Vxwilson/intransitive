@@ -11,6 +11,14 @@ import { SelfPlayTrainer } from './trainer';
 import { NNUETrainer } from './nnue/nnueTrainer';
 import { deserializeWeights, serializeWeights, getActiveFeatures } from './nnue/featureTransformer';
 import { createMasterNNUEWeights } from './nnue/nnueWeights';
+import {
+  createPairedMatchOpening,
+  runMatchGame,
+  summarizePairedMatchGames,
+  DEFAULT_MATCH_OPENING_PLIES,
+  DEFAULT_MATCH_SAFETY_CAP,
+} from '../harness/harness';
+import type { MatchAgent, MatchGameLog, SearchLimit } from '../harness/types';
 import type { NNUEWeights, TrainingSample } from './nnue/types';
 import type {
   WorkerRequest,
@@ -300,16 +308,27 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         ? deserializeWeights(req.customNNUEWeights)
         : (req.customWeights ?? trainer.weights);
 
-      // Live opening exploration: use a softmax temperature (T = 15 cp) for plies 0..3
-      // to ensure rich branching and avoid deterministic repetition across matches,
-      // then greedy argmax for tactically sound midgame/endgame conversion.
+      const movePolicy = req.movePolicy ?? 'casual-opening';
+      const activePly = req.ply ?? 0;
+      const isTrainingPolicy = movePolicy === 'training';
+      const isCasualOpening = movePolicy === 'casual-opening';
+      const temperature = movePolicy === 'competitive'
+        ? 0
+        : isTrainingPolicy
+          ? activePly < 5 ? 24 : activePly < 9 ? 10 : 0
+          : 15;
+      const rootNoise = isTrainingPolicy
+        ? activePly < 5 ? 0.25 : activePly < 9 ? 0.08 : 0
+        : 0;
+      const openingPlies = movePolicy === 'competitive' ? 0 : isCasualOpening ? 4 : 9;
+
       const { bestMove, score } = selectMove(game, weightsToUse, {
         depth: searchDepth,
         thinkTimeSec: req.thinkTimeSec,
-        temperature: 15.0,
-        rootNoise: 0.0,
-        ply: req.ply ?? 0,
-        openingPlies: 4,
+        temperature,
+        rootNoise,
+        ply: activePly,
+        openingPlies,
       });
 
       if (!bestMove) {
@@ -353,55 +372,137 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       const depthB = req.searchDepthB ?? req.searchDepth ?? 1;
       const timeSecA = req.thinkTimeSecA;
       const timeSecB = req.thinkTimeSecB;
-      const totalGames = req.numGames;
-
-      const weightsA = req.checkpointA.modelType === 'nnue' && req.checkpointA.nnueWeights
-        ? deserializeWeights(req.checkpointA.nnueWeights)
-        : (req.checkpointA.weights ?? createZeroWeights());
-
-      const weightsB = req.checkpointB.modelType === 'nnue' && req.checkpointB.nnueWeights
-        ? deserializeWeights(req.checkpointB.nnueWeights)
-        : (req.checkpointB.weights ?? createZeroWeights());
-
+      const requestedGames = req.numGames;
+      const totalGames = Math.floor(requestedGames);
+      const seed = req.seed ?? 1;
+      const openingPlies = Math.max(0, Math.floor(req.openingPlies ?? DEFAULT_MATCH_OPENING_PLIES));
+      const safetyCap = Math.max(openingPlies, Math.floor(req.safetyCap ?? DEFAULT_MATCH_SAFETY_CAP));
+      const startFen = req.startFen;
       const streamMoves = Boolean(req.streamMoves);
-      let gameIdx = 0;
-      let winsA = 0;
-      let winsB = 0;
-      let draws = 0;
-      let totalPlies = 0;
-      const completedGames: {
-        gameNumber: number;
-        fighterAIsBlue: boolean;
-        result: string;
-        termination: string;
-        moves: { san: string }[];
-      }[] = [];
+      const games: MatchGameLog[] = [];
 
-      function sendArenaResults(isCancelled: boolean) {
-        const gamesPlayed = Math.max(1, winsA + winsB + draws);
-        const winRateA = Math.round((winsA / gamesPlayed) * 100);
-        const winRateB = Math.round((winsB / gamesPlayed) * 100);
-        const drawRate = Math.round((draws / gamesPlayed) * 100);
-        const avgGameLength = gamesPlayed > 0 ? Math.round(totalPlies / gamesPlayed) : 0;
+      const weightsForCheckpoint = (checkpoint: typeof req.checkpointA) =>
+        checkpoint.modelType === 'nnue' && checkpoint.nnueWeights
+          ? deserializeWeights(checkpoint.nnueWeights)
+          : (checkpoint.weights ?? createZeroWeights());
 
+      const createAgent = (
+        checkpoint: typeof req.checkpointA,
+        depth: number,
+        thinkTimeSec?: number
+      ): MatchAgent => {
+        const limit: SearchLimit = thinkTimeSec !== undefined && thinkTimeSec > 0
+          ? { kind: 'time', valueMs: Math.max(1, Math.round(thinkTimeSec * 1000)) }
+          : { kind: 'depth', value: Math.max(1, Math.floor(depth)) };
+        return {
+          modelId: checkpoint.id,
+          modelName: checkpoint.name,
+          kind: 'search',
+          weights: weightsForCheckpoint(checkpoint),
+          search: {
+            engine: 'production',
+            limit,
+            maxDepth: MAX_SEARCH_DEPTH,
+            count: 1,
+            rootMode: 'greedy',
+          },
+        };
+      };
+
+      const agentA = createAgent(req.checkpointA, depthA, timeSecA);
+      const agentB = createAgent(req.checkpointB, depthB, timeSecB);
+
+      const currentSummary = () => summarizePairedMatchGames(games, {
+        requestedGames: totalGames,
+        pairCount: totalGames / 2,
+        seed,
+        openingPlies,
+        safetyCap,
+      });
+
+      const sendArenaResults = (isCancelled: boolean) => {
+        const summary = summarizePairedMatchGames(games, {
+          requestedGames: totalGames,
+          pairCount: totalGames / 2,
+          seed,
+          openingPlies,
+          safetyCap,
+        });
+        const denominator = Math.max(1, summary.resolvedGames);
         post({
           type: 'ARENA_RESULT',
-          winsA,
-          winsB,
-          draws,
-          winRateA,
-          winRateB,
-          drawRate,
-          gamesPlayed: winsA + winsB + draws,
-          avgGameLength,
+          winsA: summary.winsA,
+          winsB: summary.winsB,
+          draws: summary.draws,
+          truncations: summary.truncations,
+          cancelledGames: summary.cancelledGames,
+          errors: summary.errors,
+          winRateA: Math.round((summary.winsA / denominator) * 100),
+          winRateB: Math.round((summary.winsB / denominator) * 100),
+          drawRate: Math.round((summary.draws / denominator) * 100),
+          gamesPlayed: summary.gamesPlayed,
+          resolvedGames: summary.resolvedGames,
+          requestedGames: totalGames,
+          avgGameLength: summary.averagePlies,
           depthA,
           depthB,
           thinkTimeSecA: timeSecA,
           thinkTimeSecB: timeSecB,
+          seed,
+          pairCount: totalGames / 2,
+          openingPlies,
+          safetyCap,
+          uniqueOpeningCount: summary.uniqueOpeningCount,
+          duplicateOpeningCount: summary.duplicateOpeningCount,
           isCancelled,
-          completedGames,
+          gameLogs: games,
+          completedGames: games.map((game) => ({
+            gameNumber: game.gameIndex + 1,
+            fighterAIsBlue: game.aIsBlue,
+            result: game.outcome === 'A'
+              ? (game.aIsBlue ? '1-0' : '0-1')
+              : game.outcome === 'B'
+                ? (game.aIsBlue ? '0-1' : '1-0')
+                : game.outcome === 'draw'
+                  ? '1/2-1/2'
+                  : '*',
+            termination: game.reason ? `${game.outcome} (${game.reason})` : game.outcome,
+            moves: game.moves.map((move) => ({ san: move.san })),
+          })),
         });
+      };
+
+      if (!Number.isInteger(requestedGames) || requestedGames < 2 || requestedGames % 2 !== 0) {
+        isArenaRunning = false;
+        post({
+          type: 'ARENA_RESULT',
+          winsA: 0,
+          winsB: 0,
+          draws: 0,
+          truncations: 0,
+          cancelledGames: 0,
+          errors: 1,
+          winRateA: 0,
+          winRateB: 0,
+          drawRate: 0,
+          gamesPlayed: 0,
+          resolvedGames: 0,
+          requestedGames: totalGames,
+          seed,
+          pairCount: 0,
+          openingPlies,
+          safetyCap,
+          uniqueOpeningCount: 0,
+          duplicateOpeningCount: 0,
+          isCancelled: false,
+          error: `Paired tournaments require an even integer game count of at least 2; received ${requestedGames}`,
+          gameLogs: [],
+          completedGames: [],
+        });
+        break;
       }
+
+      let gameIdx = 0;
 
       function runNextGame() {
         if (arenaCancelled) {
@@ -425,68 +526,72 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
           return;
         }
 
+        const pairIndex = Math.floor(gameIdx / 2);
         const aIsBlue = gameIdx % 2 === 0;
-        const gameRes = SelfPlayTrainer.playArenaGame(
-          gameIdx,
+        const opening = createPairedMatchOpening(seed, pairIndex, startFen, openingPlies);
+        const gameLog = runMatchGame({
+          pairIndex,
+          gameIndex: gameIdx,
           totalGames,
-          weightsA,
-          weightsB,
-          depthA,
-          depthB,
-          timeSecA,
-          timeSecB,
-          (moveData) => {
-            if (streamMoves || moveData.isOver) {
-              post({
-                type: 'ARENA_STREAM_MOVE',
-                ...moveData,
-                gameIndex: gameIdx + 1,
-                totalGames,
-                currentWinsA: winsA,
-                currentWinsB: winsB,
-                currentDraws: draws,
-                fighterAIsBlue: aIsBlue,
-              });
-            }
+          seed,
+          opening,
+          agentA,
+          agentB,
+          aIsBlue,
+          safetyCap,
+          shouldCancel: () => arenaCancelled,
+          onMove: (event) => {
+            if (!streamMoves) return;
+            const summary = currentSummary();
+            post({
+              type: 'ARENA_STREAM_MOVE',
+              move: event.move.move,
+              san: event.move.san,
+              fen: event.move.fen,
+              isOver: event.isOver,
+              gameIndex: event.gameIndex + 1,
+              totalGames,
+              currentWinsA: summary.winsA,
+              currentWinsB: summary.winsB,
+              currentDraws: summary.draws,
+              truncations: summary.truncations,
+              cancelledGames: summary.cancelledGames,
+              errors: summary.errors,
+              fighterAIsBlue: event.aIsBlue,
+            });
           },
-          undefined,
-          () => arenaCancelled
-        );
-
-        if (gameRes.winner === 'A') winsA++;
-        else if (gameRes.winner === 'B') winsB++;
-        else draws++;
-
-        totalPlies += gameRes.plies;
+        });
+        games.push(gameLog);
         gameIdx++;
 
-        const pgnResult = gameRes.winner === 'A' ? (aIsBlue ? '1-0' : '0-1') : gameRes.winner === 'B' ? (aIsBlue ? '0-1' : '1-0') : '1/2-1/2';
-        const termWinner = gameRes.winner === 'draw' ? 'Draw' : gameRes.winner === 'A' ? (aIsBlue ? 'Blue won' : 'Red won') : (aIsBlue ? 'Red won' : 'Blue won');
-        const termReason = gameRes.reason ? `${termWinner} (${gameRes.reason})` : termWinner;
-        completedGames.push({
-          gameNumber: gameIdx,
-          fighterAIsBlue: aIsBlue,
-          result: pgnResult,
-          termination: termReason,
-          moves: (gameRes.sanMoves || []).map((san) => ({ san })),
+        const summary = summarizePairedMatchGames(games, {
+          requestedGames: totalGames,
+          pairCount: totalGames / 2,
+          seed,
+          openingPlies,
+          safetyCap,
         });
+        const lastMove = gameLog.moves[gameLog.moves.length - 1];
 
         // Send real-time game conclusion notification
         post({
           type: 'ARENA_STREAM_MOVE',
-          move: gameRes.lastMove,
+          move: lastMove?.move ?? { from: 0, to: 0, piece: 'P' as const },
           san: '',
-          fen: gameRes.lastFen,
+          fen: lastMove?.fen ?? opening.startFen,
           isOver: true,
           gameIndex: gameIdx,
           totalGames,
-          currentWinsA: winsA,
-          currentWinsB: winsB,
-          currentDraws: draws,
+          currentWinsA: summary.winsA,
+          currentWinsB: summary.winsB,
+          currentDraws: summary.draws,
+          truncations: summary.truncations,
+          cancelledGames: summary.cancelledGames,
+          errors: summary.errors,
           fighterAIsBlue: aIsBlue,
         });
 
-        if (gameIdx < totalGames && !arenaCancelled) {
+        if (gameIdx < totalGames && !arenaCancelled && gameLog.outcome !== 'cancelled') {
           if (isArenaPaused) {
             resumeArenaFn = runNextGame;
           } else {
@@ -495,7 +600,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
         } else {
           isArenaRunning = false;
           resumeArenaFn = null;
-          sendArenaResults(arenaCancelled);
+          sendArenaResults(arenaCancelled || gameLog.outcome === 'cancelled');
         }
       }
 

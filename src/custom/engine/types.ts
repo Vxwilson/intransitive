@@ -4,6 +4,7 @@
 
 import type { Player, Move } from '../core/types';
 import type { GameHistory } from '../core/game';
+import type { MatchGameLog } from '../harness/types';
 import type { SerializedNNUEWeights } from './nnue/types';
 
 export interface EvaluationWeights {
@@ -33,6 +34,9 @@ export interface TrainingConfig {
   searchDepth: number;  // 1, 2, or 3
   maxPliesPerGame: number;
 }
+
+/** Explicit move-selection semantics shared by live and evaluation paths. */
+export type MovePolicy = 'competitive' | 'casual-opening' | 'training';
 
 export interface GenerationPoint {
   generation: number;
@@ -170,6 +174,7 @@ export type WorkerRequest =
       ply?: number;
       searchDepth?: number;
       thinkTimeSec?: number;
+      movePolicy?: MovePolicy;
       config?: Partial<TrainingConfig>;
       customWeights?: EvaluationWeights;
       customNNUEWeights?: SerializedNNUEWeights;
@@ -185,6 +190,10 @@ export type WorkerRequest =
       thinkTimeSecA?: number;
       thinkTimeSecB?: number;
       streamMoves?: boolean;
+      seed?: number;
+      openingPlies?: number;
+      safetyCap?: number;
+      startFen?: string;
     }
   | { type: 'ARENA_PAUSE' }
   | { type: 'ARENA_RESUME' }
@@ -272,6 +281,9 @@ export type WorkerResponse =
       currentWinsA?: number;
       currentWinsB?: number;
       currentDraws?: number;
+      truncations?: number;
+      cancelledGames?: number;
+      errors?: number;
       fighterAIsBlue?: boolean;
     }
   | {
@@ -283,12 +295,26 @@ export type WorkerResponse =
       winsB: number;
       draws: number;
       gamesPlayed: number;
+      resolvedGames?: number;
+      requestedGames?: number;
+      truncations: number;
+      cancelledGames: number;
+      errors: number;
       avgGameLength?: number;
       depthA?: number;
       depthB?: number;
       thinkTimeSecA?: number;
       thinkTimeSecB?: number;
+      seed?: number;
+      pairCount?: number;
+      openingPlies?: number;
+      safetyCap?: number;
+      uniqueOpeningCount?: number;
+      duplicateOpeningCount?: number;
       isCancelled?: boolean;
+      error?: string;
+      /** Full audit logs; completedGames remains the compact PGN adapter shape. */
+      gameLogs?: MatchGameLog[];
       completedGames?: {
         gameNumber: number;
         fighterAIsBlue: boolean;

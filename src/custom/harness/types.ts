@@ -50,7 +50,7 @@ export interface HarnessSearchResult {
   candidates: RankedMove[];
 }
 
-export type MatchOutcome = 'A' | 'B' | 'draw' | 'truncated' | 'error';
+export type MatchOutcome = 'A' | 'B' | 'draw' | 'truncated' | 'cancelled' | 'error';
 
 export interface MatchAgent {
   modelId: string;
@@ -72,15 +72,44 @@ export interface LoggedMove {
   completedDepth?: number;
 }
 
+/**
+ * The exact random opening shared by both games in a paired evaluation.
+ * Keeping the moves, rather than only the resulting FEN, preserves repetition
+ * history and makes the opening independently replayable.
+ */
+export interface MatchOpening {
+  startFen: string;
+  seed: number;
+  requestedPlies: number;
+  moves: Move[];
+  identity: string;
+}
+
+export interface MatchMoveEvent {
+  pairIndex: number;
+  gameIndex: number;
+  totalGames: number;
+  aIsBlue: boolean;
+  opening: MatchOpening;
+  move: LoggedMove;
+  isOver: boolean;
+}
+
 export interface MatchGameLog {
   kind: 'intransitive-match-game';
-  schemaVersion: 1;
+  schemaVersion: 2;
   engineVersion: string;
   pairIndex: number;
   gameIndex: number;
   seed: number;
   openingSeed: number;
   openingPlies: number;
+  startFen: string;
+  opening: MatchOpening;
+  /** Complete move history, including the shared opening. */
+  history: { startFen: string; moves: Move[] };
+  /** Stable hash of the complete replay and recorded outcome. */
+  gameHash: string;
   aIsBlue: boolean;
   modelIds: { blue: string; red: string };
   limits: { blue: SearchLimit | 'random'; red: SearchLimit | 'random' };
@@ -94,16 +123,22 @@ export interface MatchGameLog {
 
 export interface PairedMatchReport {
   kind: 'intransitive-paired-match-report';
-  schemaVersion: 1;
+  schemaVersion: 2;
   engineVersion: string;
   seed: number;
   pairCount: number;
+  requestedGames: number;
+  openingPlies: number;
+  safetyCap: number;
+  uniqueOpeningCount: number;
+  duplicateOpeningCount: number;
   gamesPlayed: number;
   resolvedGames: number;
   winsA: number;
   winsB: number;
   draws: number;
   truncations: number;
+  cancelledGames: number;
   errors: number;
   scoreA: number;
   scoreAPerResolvedGame: number | null;
